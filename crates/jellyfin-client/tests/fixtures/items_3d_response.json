@@ -1,0 +1,215 @@
+{
+  "Items": [
+    {
+      "Id": "avatar-3d-hsbs-id",
+      "Name": "Avatar (2009)",
+      "OriginalTitle": "Avatar",
+      "Path": "/Volume1/media/3D/Avatar (2009).3D.HSBS.mkv",
+      "Video3DFormat": "HalfSideBySide",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 1920,
+          "Height": 1080,
+          "AspectRatio": "16:9",
+          "BitRate": 25000000,
+          "RealFrameRate": 23.976,
+          "AverageFrameRate": 23.976,
+          "StereoMode": "1",
+          "IsDefault": true,
+          "DisplayTitle": "1080p HEVC 3D HSBS"
+        },
+        {
+          "Codec": "aac",
+          "Type": "Audio",
+          "Index": 1,
+          "BitRate": 384000,
+          "IsDefault": true,
+          "DisplayTitle": "English AAC 5.1",
+          "Language": "eng"
+        }
+      ],
+      "Container": "mkv",
+      "RunTimeTicks": 97200000000,
+      "Overview": "A paraplegic Marine dispatched to the moon Pandora on a unique mission becomes torn between following his orders and protecting the world he feels is his home.",
+      "Type": "Movie",
+      "UserData": {
+        "PlaybackPositionTicks": 12000000000,
+        "PlayCount": 2,
+        "IsFavorite": true,
+        "Played": false
+      }
+    },
+    {
+      "Id": "space-fsbs-id",
+      "Name": "Space Walk 3D FSBS",
+      "OriginalTitle": "Space Walk 3D",
+      "Path": "/Volume1/media/3D/Space.Walk.3D.FSBS.1080p.mkv",
+      "Video3DFormat": "FullSideBySide",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 3840,
+          "Height": 1080,
+          "AspectRatio": "16:9",
+          "BitRate": 45000000,
+          "RealFrameRate": 24.0,
+          "AverageFrameRate": 24.0,
+          "IsDefault": true,
+          "DisplayTitle": "1080p Full SBS HEVC"
+        }
+      ],
+      "Container": "mkv",
+      "RunTimeTicks": 27000000000,
+      "Overview": "Experience space in Full Side-by-Side 3D.",
+      "Type": "Movie"
+    },
+    {
+      "Id": "gravity-tab-id",
+      "Name": "Gravity (2013)",
+      "OriginalTitle": "Gravity",
+      "Path": "/Volume1/media/3D/Gravity.2013.3D.TAB._TB.mp4",
+      "Video3DFormat": "HalfTopAndBottom",
+      "MediaStreams": [
+        {
+          "Codec": "h264",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 1920,
+          "Height": 1080,
+          "AspectRatio": "16:9",
+          "BitRate": 18000000,
+          "RealFrameRate": 23.976,
+          "StereoMode": "top_bottom",
+          "IsDefault": true,
+          "DisplayTitle": "1080p H.264 Half TAB"
+        }
+      ],
+      "Container": "mp4",
+      "RunTimeTicks": 54600000000,
+      "Overview": "Two astronauts work together to survive after an accident leaves them stranded in space.",
+      "Type": "Movie"
+    },
+    {
+      "Id": "rollercoaster-vr180-id",
+      "Name": "Rollercoaster VR180",
+      "OriginalTitle": "Rollercoaster",
+      "Path": "/Volume1/media/VR/Rollercoaster.VR180.HSBS.mp4",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 5760,
+          "Height": 2880,
+          "BitRate": 80000000,
+          "RealFrameRate": 59.94,
+          "IsDefault": true,
+          "DisplayTitle": "5.7K VR180 HEVC"
+        }
+      ],
+      "Container": "mp4",
+      "RunTimeTicks": 6000000000,
+      "Overview": "Thrill ride in VR180 stereo.",
+      "Type": "Video"
+    },
+    {
+      "Id": "wildlife-fisheye-id",
+      "Name": "Wildlife Safari Fisheye",
+      "OriginalTitle": "Wildlife Safari",
+      "Path": "/Volume1/media/VR/Wildlife.fisheye.SBS._LR.mp4",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 8192,
+          "Height": 4096,
+          "RealFrameRate": 29.97,
+          "BitRate": 110000000,
+          "IsDefault": true,
+          "DisplayTitle": "8K Fisheye Stereo"
+        }
+      ],
+      "Container": "mp4",
+      "RunTimeTicks": 15000000000,
+      "Overview": "Dual fisheye stereoscopic documentary.",
+      "Type": "Video"
+    },
+    {
+      "Id": "earth-360-id",
+      "Name": "Earth Orbit 360",
+      "OriginalTitle": "Earth Orbit",
+      "Path": "/Volume1/media/VR/Earth.Orbit.360.FSBS.mp4",
+      "MediaStreams": [
+        {
+          "Codec": "av1",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 7680,
+          "Height": 3840,
+          "RealFrameRate": 30.0,
+          "BitRate": 60000000,
+          "IsDefault": true,
+          "DisplayTitle": "8K 360 AV1 Stereo"
+        }
+      ],
+      "Container": "mp4",
+      "RunTimeTicks": 18000000000,
+      "Overview": "Panoramic 360 stereo orbit view.",
+      "Type": "Video"
+    },
+    {
+      "Id": "inverted-rl-id",
+      "Name": "Stereo Demo Inverted Eye",
+      "OriginalTitle": "Stereo Demo",
+      "Path": "/Volume1/media/3D/Stereo_Demo_3D_RL.mkv",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 1920,
+          "Height": 1080,
+          "StereoMode": "11",
+          "IsDefault": true,
+          "DisplayTitle": "1080p 3D Right-Eye-First"
+        }
+      ],
+      "Container": "mkv",
+      "RunTimeTicks": 12000000000,
+      "Overview": "Stereo file with reversed eyes.",
+      "Type": "Movie"
+    },
+    {
+      "Id": "normal-2d-id",
+      "Name": "Interstellar (2014)",
+      "OriginalTitle": "Interstellar",
+      "Path": "/Volume1/media/Movies/Interstellar (2014).1080p.mkv",
+      "MediaStreams": [
+        {
+          "Codec": "hevc",
+          "Type": "Video",
+          "Index": 0,
+          "Width": 1920,
+          "Height": 1080,
+          "AspectRatio": "16:9",
+          "BitRate": 15000000,
+          "RealFrameRate": 23.976,
+          "IsDefault": true,
+          "DisplayTitle": "1080p Standard 2D"
+        }
+      ],
+      "Container": "mkv",
+      "RunTimeTicks": 101400000000,
+      "Overview": "A team of explorers travel through a wormhole in space in an attempt to ensure humanity's survival.",
+      "Type": "Movie"
+    }
+  ],
+  "TotalRecordCount": 8,
+  "StartIndex": 0
+}

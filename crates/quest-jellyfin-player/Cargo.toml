@@ -1,0 +1,24 @@
+[package]
+name = "quest-jellyfin-player"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stereo video rendering and playback engine for quest-jellyfin-3d using xr-core and xr-video"
+
+[dependencies]
+jellyfin-client = { path = "../jellyfin-client" }
+xr-core.workspace = true
+xr-video.workspace = true
+openxr = { version = "0.22", default-features = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread"] }
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+wiremock.workspace = true

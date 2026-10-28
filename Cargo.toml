@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jellyfin-client",
+    "crates/quest-jellyfin-player",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Josh Archer <jarcher1200@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Josh-Archer/quest-jellyfin-3d"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = { version = "2.5", features = ["serde"] }
+wiremock = "0.6"
+xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
+xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
