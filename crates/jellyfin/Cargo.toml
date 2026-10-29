@@ -1,0 +1,22 @@
+[package]
+name = "jellyfin-client"
+description = "Headless Jellyfin HTTP client for QuickConnect pairing and library browse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+parking_lot.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+tokio.workspace = true
+wiremock = "0.6"

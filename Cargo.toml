@@ -1,14 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["crates/jellyfin-player"]
+members = ["crates/jellyfin-player", "crates/jellyfin"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["Josh Archer"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Josh-Archer/quest-jellyfin-3d"
 
 [workspace.dependencies]
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tracing = "0.1"
 # Shared XR/video crates from DeskQuest (#198), pinned; not copied.
 xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
 xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
