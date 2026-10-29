@@ -1,0 +1,366 @@
+//! HTTP calls for QuickConnect and library browse.
+use std::sync::Arc;
+use std::time::Duration;
+
+use parking_lot::Mutex;
+use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
+use reqwest::{Method, StatusCode};
+use serde::de::DeserializeOwned;
+
+use crate::error::{scrub_secret, truncate_body, Error, JellyfinResult};
+use crate::identity::{authorization_header, ClientIdentity};
+use crate::json::parse;
+use crate::library::{ItemPage, ItemsQuery, ItemsResponse};
+use crate::quick_connect::{
+    AuthenticationResult, QuickConnectChallenge, QuickConnectPoll, QuickConnectResult,
+};
+use crate::store::{StoredSession, TokenStore};
+
+const INITIATE_PATH: &str = "/QuickConnect/Initiate";
+const CONNECT_PATH: &str = "/QuickConnect/Connect";
+const EXCHANGE_PATH: &str = "/Users/AuthenticateWithQuickConnect";
+const ITEMS_PATH: &str = "/Items";
+
+/// Headless Jellyfin client for the 3D player.
+///
+/// QuickConnect is `POST /QuickConnect/Initiate`, then `GET /QuickConnect/Connect`
+/// until `Authenticated` is true. Jellyfin 10.8 and later do not put the access
+/// token on that poll. The client then `POST`s the secret to
+/// `/Users/AuthenticateWithQuickConnect` and saves the token through [`TokenStore`].
+#[derive(Clone)]
+pub struct JellyfinClient {
+    http: reqwest::Client,
+    base_url: String,
+    identity: ClientIdentity,
+    session: Arc<Mutex<Option<StoredSession>>>,
+    store: Arc<dyn TokenStore>,
+}
+
+impl std::fmt::Debug for JellyfinClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JellyfinClient")
+            .field("base_url", &self.base_url)
+            .field("identity", &self.identity)
+            .field("signed_in", &self.access_token().is_some())
+            .finish()
+    }
+}
+
+impl JellyfinClient {
+    /// Client for `base_url`. A saved session is loaded before the client is returned.
+    ///
+    /// `base_url` may include a Jellyfin subpath (`http://host:8096/jellyfin`).
+    /// A trailing slash is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidBaseUrl`] for a non-HTTP URL and [`Error::Store`]
+    /// when the token store cannot be read.
+    pub fn new(
+        base_url: &str,
+        identity: ClientIdentity,
+        store: Arc<dyn TokenStore>,
+    ) -> JellyfinResult<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent(format!("{}/{}", identity.client(), identity.version()))
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+                headers
+            })
+            .build()
+            .map_err(|err| Error::Transport(err.to_string()))?;
+        let client = Self {
+            http,
+            base_url: normalize_base_url(base_url)?,
+            identity,
+            session: Arc::new(Mutex::new(None)),
+            store,
+        };
+        client.restore()?;
+        Ok(client)
+    }
+
+    /// Client with an empty [`crate::MemoryTokenStore`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidBaseUrl`] for a non-HTTP URL.
+    pub fn with_memory_store(base_url: &str, identity: ClientIdentity) -> JellyfinResult<Self> {
+        Self::new(
+            base_url,
+            identity,
+            Arc::new(crate::store::MemoryTokenStore::new()),
+        )
+    }
+
+    /// Server base URL with no trailing slash.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Identity attached to every request.
+    #[must_use]
+    pub fn identity(&self) -> &ClientIdentity {
+        &self.identity
+    }
+
+    /// Session held in memory, if the client is signed in.
+    #[must_use]
+    pub fn session(&self) -> Option<StoredSession> {
+        self.session.lock().clone()
+    }
+
+    /// Access token held in memory.
+    #[must_use]
+    pub fn access_token(&self) -> Option<String> {
+        self.session().map(|session| session.access_token)
+    }
+
+    /// Reload the session from the token store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] when the store cannot be read.
+    pub fn restore(&self) -> JellyfinResult<Option<StoredSession>> {
+        let loaded = self.store.load().map_err(Error::Store)?;
+        *self.session.lock() = loaded.clone();
+        Ok(loaded)
+    }
+
+    /// Forget the in-memory session and clear the token store.
+    ///
+    /// The in-memory session is kept when the store cannot be cleared, so a
+    /// retry does not disagree with what was saved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] when the store cannot be cleared.
+    pub fn clear_session(&self) -> JellyfinResult<()> {
+        self.store.clear().map_err(Error::Store)?;
+        *self.session.lock() = None;
+        Ok(())
+    }
+
+    /// `POST /QuickConnect/Initiate`.
+    ///
+    /// Show [`QuickConnectChallenge::code`] to the user. Keep the secret and pass
+    /// it to [`JellyfinClient::poll_quick_connect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::QuickConnectDisabled`] when the server answers 401.
+    pub async fn initiate_quick_connect(&self) -> JellyfinResult<QuickConnectChallenge> {
+        let result: QuickConnectResult = self
+            .request(Method::POST, INITIATE_PATH, &[], None, None)
+            .await?;
+        if result.secret.is_empty() {
+            return Err(Error::MissingField("Secret"));
+        }
+        if result.code.is_empty() {
+            return Err(Error::MissingField("Code"));
+        }
+        Ok(QuickConnectChallenge {
+            secret: result.secret,
+            code: result.code,
+        })
+    }
+
+    /// `GET /QuickConnect/Connect` for one secret.
+    ///
+    /// When the server reports the request as authorized, this also exchanges
+    /// the secret for an access token and saves it through the token store.
+    /// The in-memory session is updated only after that save succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownSecret`] for an unknown or expired secret,
+    /// [`Error::MissingField`] when the token exchange omits `AccessToken`, and
+    /// [`Error::Store`] when the token cannot be saved.
+    pub async fn poll_quick_connect(&self, secret: &str) -> JellyfinResult<QuickConnectPoll> {
+        if secret.is_empty() {
+            return Err(Error::MissingField("Secret"));
+        }
+        let query = [("secret".to_owned(), secret.to_owned())];
+        let result: QuickConnectResult = self
+            .request(Method::GET, CONNECT_PATH, &query, None, Some(secret))
+            .await?;
+        if !result.authenticated {
+            return Ok(QuickConnectPoll::Pending { code: result.code });
+        }
+        let session = self.exchange_secret(secret).await?;
+        self.store.save(&session).map_err(Error::Store)?;
+        *self.session.lock() = Some(session.clone());
+        Ok(QuickConnectPoll::Authorized(session))
+    }
+
+    /// Poll until the code is authorized or `attempts` is exhausted.
+    ///
+    /// The interval is the wait between polls. The last attempt does not sleep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::QuickConnectTimeout`] when every poll is still pending.
+    /// Other poll errors are returned as-is.
+    pub async fn wait_for_quick_connect(
+        &self,
+        secret: &str,
+        interval: Duration,
+        attempts: u32,
+    ) -> JellyfinResult<StoredSession> {
+        for attempt in 0..attempts {
+            if let QuickConnectPoll::Authorized(session) = self.poll_quick_connect(secret).await? {
+                return Ok(session);
+            }
+            if attempt + 1 < attempts {
+                tokio::time::sleep(interval).await;
+            }
+        }
+        Err(Error::QuickConnectTimeout { attempts })
+    }
+
+    /// `GET /Items` with `Fields=Video3DFormat,MediaStreams,Path` and paging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] when no access token is loaded.
+    pub async fn list_items(&self, query: &ItemsQuery) -> JellyfinResult<ItemPage> {
+        if self.access_token().is_none() {
+            return Err(Error::NotSignedIn);
+        }
+        let user_id = self.session().map(|session| session.user_id);
+        let pairs = query.query_pairs(user_id.as_deref());
+        let response: ItemsResponse = self
+            .request(Method::GET, ITEMS_PATH, &pairs, None, None)
+            .await?;
+        Ok(response.into_page())
+    }
+
+    async fn exchange_secret(&self, secret: &str) -> JellyfinResult<StoredSession> {
+        let body = serde_json::json!({ "Secret": secret });
+        let result: AuthenticationResult = self
+            .request(Method::POST, EXCHANGE_PATH, &[], Some(&body), Some(secret))
+            .await?;
+        if result.access_token.is_empty() {
+            return Err(Error::MissingField("AccessToken"));
+        }
+        let user = result.user.unwrap_or_default();
+        let server_id = if result.server_id.is_empty() {
+            user.server_id
+        } else {
+            result.server_id
+        };
+        Ok(StoredSession {
+            server_url: self.base_url.clone(),
+            access_token: result.access_token,
+            user_id: user.id,
+            user_name: user.name,
+            server_id,
+            device_id: self.identity.device_id().to_owned(),
+        })
+    }
+
+    async fn request<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &'static str,
+        query: &[(String, String)],
+        body: Option<&serde_json::Value>,
+        secret: Option<&str>,
+    ) -> JellyfinResult<T> {
+        let url = format!("{}{path}", self.base_url);
+        let mut builder = self
+            .http
+            .request(method.clone(), &url)
+            .header(AUTHORIZATION, self.authorization_value());
+        if !query.is_empty() {
+            builder = builder.query(query);
+        }
+        if let Some(body) = body {
+            builder = builder.json(body);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|err| Error::Transport(scrub_secret(&err.to_string(), secret)))?;
+        let status = response.status();
+        tracing::debug!(%method, path, status = status.as_u16(), "jellyfin response");
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(status_error(
+                path,
+                status,
+                &scrub_secret(&body_text, secret),
+            ));
+        }
+        let value = response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))?;
+        parse(value).map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))
+    }
+
+    fn authorization_value(&self) -> HeaderValue {
+        let token = self.access_token();
+        let header = authorization_header(&self.identity, token.as_deref());
+        HeaderValue::from_str(&header).unwrap_or_else(|_| HeaderValue::from_static("MediaBrowser"))
+    }
+}
+
+fn status_error(path: &'static str, status: StatusCode, body: &str) -> Error {
+    if status == StatusCode::UNAUTHORIZED
+        && (path == INITIATE_PATH || path == CONNECT_PATH || path == EXCHANGE_PATH)
+    {
+        return Error::QuickConnectDisabled;
+    }
+    if status == StatusCode::NOT_FOUND && (path == CONNECT_PATH || path == EXCHANGE_PATH) {
+        return Error::UnknownSecret;
+    }
+    Error::Api {
+        status: status.as_u16(),
+        path,
+        body: truncate_body(body),
+    }
+}
+
+fn normalize_base_url(url: &str) -> Result<String, Error> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
+    let rest = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    if !scheme_ok || rest.is_empty() || rest.starts_with('/') {
+        return Err(Error::InvalidBaseUrl(url.trim().to_owned()));
+    }
+    Ok(trimmed.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_keeps_a_subpath_and_drops_a_trailing_slash() {
+        assert_eq!(
+            normalize_base_url("http://nas.example:8096/jellyfin/").unwrap(),
+            "http://nas.example:8096/jellyfin"
+        );
+        assert!(normalize_base_url("nas.example:8096").is_err());
+        assert!(normalize_base_url("http://").is_err());
+    }
+
+    #[test]
+    fn scrub_removes_the_raw_and_encoded_secret() {
+        let message = "failed for secret abc/def and abc%2Fdef";
+        assert_eq!(
+            scrub_secret(message, Some("abc/def")),
+            "failed for secret <redacted> and <redacted>"
+        );
+    }
+}
