@@ -1,2 +1,3 @@
 [env]
+# audiopus_sys bundles an old Opus CMakeLists; CMake 4 needs this (same fix as DeskQuest).
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"

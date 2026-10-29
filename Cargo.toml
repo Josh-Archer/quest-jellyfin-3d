@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/jellyfin-client",
+    "crates/jellyfin-player",
     "crates/quest-jellyfin-player",
 ]
 
@@ -21,5 +22,5 @@ tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = { version = "2.5", features = ["serde"] }
 wiremock = "0.6"
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
+xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
+xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }

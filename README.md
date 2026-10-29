@@ -65,6 +65,7 @@ quest-jellyfin-3d/
 │   └── workflows/ci.yml             # GitHub Actions CI (fmt, clippy, test, Android check)
 ├── Cargo.toml                       # Cargo workspace declaration
 ├── crates/
+│   ├── jellyfin-player/             # App crate (from scaffold)
 │   ├── jellyfin-client/             # Pure Rust Jellyfin REST API client (no Android deps, host-testable)
 │   │   ├── src/
 │   │   │   ├── auth.rs              # ClientInfo and Session headers
@@ -87,10 +88,10 @@ quest-jellyfin-3d/
 ```
 
 ### Dependencies on `xr-core` and `xr-video`
-These reusable XR foundation crates are consumed from DeskQuest PR #200 (commit `1866493`):
+These reusable XR foundation crates are consumed from DeskQuest#198 (pinned to `8a2b13d9afc1b61deefe480dc16d11cf879f3021`; bump `rev` in `Cargo.toml` to pick up changes):
 ```toml
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "1866493" }
+xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
+xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
 ```
 - `xr-core`: Reusable OpenXR session, passthrough, quad/cylinder composition layers, and spatial models.
 - `xr-video`: Zero-copy hardware video decoder abstraction (`HardwareVideoDecoder`, `MockHardwareDecoder`), stereo layouts, and A/V synchronizer (`AvSynchronizer`).
@@ -133,3 +134,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - [ ] **M5**: MV-HEVC spatial video decoding
 - [ ] **M6**: Server-side Blu-ray MVC to full SBS HEVC conversion
 - [ ] **M7**: Tailscale remote playback & optimized transcode profiles
+
+---
+
+## CI
+Runs on the ARC scale set `home-gh-runner-quest-jellyfin-3d` (Josh-Archer/home PR #3956). DeskQuest is public, so cargo fetches the pinned git deps over HTTPS with no deploy key.

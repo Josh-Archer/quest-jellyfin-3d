@@ -613,6 +613,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyfin-player"
+version = "0.1.0"
+dependencies = [
+ "xr-core",
+ "xr-video",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1890,7 +1898,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xr-core"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/DeskQuest?rev=1866493#1866493c0affe91c617b6cfdfa32630805e51198"
+source = "git+https://github.com/Josh-Archer/DeskQuest?rev=8a2b13d9afc1b61deefe480dc16d11cf879f3021#8a2b13d9afc1b61deefe480dc16d11cf879f3021"
 dependencies = [
  "ash",
  "libc",
@@ -1908,7 +1916,7 @@ dependencies = [
 [[package]]
 name = "xr-video"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/DeskQuest?rev=1866493#1866493c0affe91c617b6cfdfa32630805e51198"
+source = "git+https://github.com/Josh-Archer/DeskQuest?rev=8a2b13d9afc1b61deefe480dc16d11cf879f3021#8a2b13d9afc1b61deefe480dc16d11cf879f3021"
 dependencies = [
  "ash",
  "audiopus",
