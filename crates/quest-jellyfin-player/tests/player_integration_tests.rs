@@ -1,9 +1,10 @@
+use std::sync::Arc;
+
 use jellyfin_client::{
-    ClientInfo, JellyfinClient, JellyfinVideo3DFormat, MediaItem, MediaStream, StereoFormat,
-    StreamType,
+    BaseItem, ClientIdentity, JellyfinClient, MediaStream, MediaStreamType, MemoryTokenStore,
+    StoredSession, TokenStore, Video3DFormat,
 };
-use quest_jellyfin_player::{PlaybackEngine, PlaybackState};
-use url::Url;
+use quest_jellyfin_player::{PlaybackEngine, PlaybackState, StereoFormat};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use xr_video::config::VideoCodec;
@@ -12,9 +13,19 @@ use xr_video::decoder::mock::MockHardwareDecoder;
 #[tokio::test]
 async fn test_playback_engine_full_lifecycle() {
     let mock_server = MockServer::start().await;
-    let base_url = Url::parse(&mock_server.uri()).unwrap();
-    let client = JellyfinClient::new(base_url, ClientInfo::default());
-    client.set_token("test-quest-token").await;
+    let store = Arc::new(MemoryTokenStore::new());
+    store
+        .save(&StoredSession {
+            server_url: mock_server.uri(),
+            access_token: "test-quest-token".to_owned(),
+            user_id: "user-1".to_owned(),
+            user_name: "josh".to_owned(),
+            server_id: "server-1".to_owned(),
+            device_id: "quest-3".to_owned(),
+        })
+        .unwrap();
+    let identity = ClientIdentity::new("quest-jellyfin-3d", "Quest 3", "quest-3", "0.1.0").unwrap();
+    let client = JellyfinClient::new(&mock_server.uri(), identity, store).unwrap();
 
     // 1. Mock PlaybackInfo
     let pinfo_json = serde_json::json!({
@@ -59,15 +70,14 @@ async fn test_playback_engine_full_lifecycle() {
     let mut engine = PlaybackEngine::new(client, decoder);
     assert_eq!(engine.state(), PlaybackState::Idle);
 
-    let item = MediaItem {
+    let item = BaseItem {
         id: "item-avatar-3d".to_string(),
         name: "Avatar 3D FSBS".to_string(),
-        original_title: Some("Avatar".to_string()),
         path: Some("/media/3D/Avatar.FSBS.1080p.mkv".to_string()),
-        video_3d_format: Some(JellyfinVideo3DFormat::FullSideBySide),
+        video_3d_format: Some(Video3DFormat::FullSideBySide),
         media_streams: vec![MediaStream {
             codec: Some("hevc".to_string()),
-            stream_type: Some(StreamType::Video),
+            stream_type: Some(MediaStreamType::Video),
             width: Some(3840),
             height: Some(1080),
             real_frame_rate: Some(24.0),
@@ -75,9 +85,8 @@ async fn test_playback_engine_full_lifecycle() {
         }],
         container: Some("mkv".to_string()),
         run_time_ticks: Some(90_000_000_000),
-        overview: None,
         item_type: Some("Movie".to_string()),
-        user_data: None,
+        ..Default::default()
     };
 
     // Load item

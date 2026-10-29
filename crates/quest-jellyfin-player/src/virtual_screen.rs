@@ -1,10 +1,10 @@
 //! Virtual screen placement, environment mode (passthrough vs dark room), and OpenXR stereo layers.
 
 use crate::error::Result;
+use crate::format::{EyeOrder, StereoFormat};
 use crate::stereo::{
     calculate_display_aspect_ratio, calculate_eye_pixel_rect, Eye, StereoPixelRect,
 };
-use jellyfin_client::{EyeOrder, StereoFormat};
 use openxr::{
     CompositionLayerCylinderKHR, CompositionLayerFlags, CompositionLayerQuad, Extent2Df, Extent2Di,
     EyeVisibility, Graphics, Offset2Di, Posef, Quaternionf, Rect2Di, Space, Swapchain,
@@ -114,7 +114,7 @@ pub fn build_stereo_eye_layer_specs(
     texture_width: u32,
     texture_height: u32,
 ) -> Result<Vec<EyeLayerSpec>> {
-    if !format.is_3d() {
+    if matches!(format, StereoFormat::Mono | StereoFormat::Unspecified3d) {
         // Mono 2D video uses a single layer visible to both eyes
         let full_rect = StereoPixelRect {
             x: 0,

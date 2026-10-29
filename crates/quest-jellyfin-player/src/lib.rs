@@ -8,11 +8,13 @@
 //! - Jellyfin session reporting and direct play coordination
 
 pub mod error;
+pub mod format;
 pub mod playback_engine;
 pub mod stereo;
 pub mod virtual_screen;
 
 pub use error::{PlayerError, Result};
+pub use format::{detect_item_format, DetectedStereoFormat, EyeOrder, StereoFormat};
 pub use playback_engine::{PlaybackEngine, PlaybackState};
 pub use stereo::{
     calculate_display_aspect_ratio, calculate_eye_pixel_rect, calculate_eye_uv, Eye, EyeRegion,

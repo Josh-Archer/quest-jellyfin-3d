@@ -1,6 +1,6 @@
 //! Meta Quest 3+ device profile for Jellyfin direct play negotiation.
 
-use crate::models::{MediaItem, StreamType};
+use crate::library::{BaseItem, MediaStreamType};
 use serde::{Deserialize, Serialize};
 
 /// Condition for codec limitations (resolution, framerate, bit depth).
@@ -182,7 +182,7 @@ pub enum DirectPlayDecision {
 }
 
 /// Evaluates whether a given media item can be directly played on Quest 3.
-pub fn evaluate_direct_play(profile: &DeviceProfile, item: &MediaItem) -> DirectPlayDecision {
+pub fn evaluate_direct_play(profile: &DeviceProfile, item: &BaseItem) -> DirectPlayDecision {
     // Check container
     let container = item
         .container
@@ -209,7 +209,7 @@ pub fn evaluate_direct_play(profile: &DeviceProfile, item: &MediaItem) -> Direct
     let video_stream = item
         .media_streams
         .iter()
-        .find(|s| s.stream_type == Some(StreamType::Video));
+        .find(|s| s.stream_type == Some(MediaStreamType::Video));
 
     if let Some(vs) = video_stream {
         if let Some(codec) = &vs.codec {
@@ -270,7 +270,7 @@ pub fn evaluate_direct_play(profile: &DeviceProfile, item: &MediaItem) -> Direct
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::MediaStream;
+    use crate::library::MediaStream;
 
     #[test]
     fn test_quest_profile_hevc_cap() {
@@ -289,15 +289,14 @@ mod tests {
     #[test]
     fn test_evaluate_direct_play_valid_8k30() {
         let profile = quest_device_profile();
-        let item = MediaItem {
+        let item = BaseItem {
             id: "1".to_string(),
             name: "8K VR Video".to_string(),
-            original_title: None,
             path: Some("/media/8k.mkv".to_string()),
             video_3d_format: None,
             media_streams: vec![MediaStream {
                 codec: Some("hevc".to_string()),
-                stream_type: Some(StreamType::Video),
+                stream_type: Some(MediaStreamType::Video),
                 width: Some(7680),
                 height: Some(3840),
                 real_frame_rate: Some(29.97),
@@ -305,9 +304,8 @@ mod tests {
             }],
             container: Some("mkv".to_string()),
             run_time_ticks: None,
-            overview: None,
             item_type: Some("Movie".to_string()),
-            user_data: None,
+            ..Default::default()
         };
 
         let decision = evaluate_direct_play(&profile, &item);
@@ -317,15 +315,14 @@ mod tests {
     #[test]
     fn test_evaluate_direct_play_exceeds_8k30_framerate() {
         let profile = quest_device_profile();
-        let item = MediaItem {
+        let item = BaseItem {
             id: "1".to_string(),
             name: "8K 60fps Video".to_string(),
-            original_title: None,
             path: Some("/media/8k60.mkv".to_string()),
             video_3d_format: None,
             media_streams: vec![MediaStream {
                 codec: Some("hevc".to_string()),
-                stream_type: Some(StreamType::Video),
+                stream_type: Some(MediaStreamType::Video),
                 width: Some(7680),
                 height: Some(3840),
                 real_frame_rate: Some(60.0),
@@ -333,9 +330,8 @@ mod tests {
             }],
             container: Some("mkv".to_string()),
             run_time_ticks: None,
-            overview: None,
             item_type: Some("Movie".to_string()),
-            user_data: None,
+            ..Default::default()
         };
 
         let decision = evaluate_direct_play(&profile, &item);

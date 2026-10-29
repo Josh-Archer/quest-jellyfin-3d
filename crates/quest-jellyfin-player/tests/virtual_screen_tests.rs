@@ -1,9 +1,9 @@
-use jellyfin_client::{EyeOrder, StereoFormat};
 use openxr::EyeVisibility;
 use quest_jellyfin_player::{
     build_stereo_eye_layer_specs, StereoPixelRect, VirtualScreenConfig, VirtualScreenEnvironment,
     VirtualScreenShape,
 };
+use quest_jellyfin_player::{EyeOrder, StereoFormat};
 
 #[test]
 fn test_virtual_screen_config_and_desktop_layer() {

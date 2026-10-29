@@ -1,6 +1,6 @@
 //! Keycloak OpenID Connect (OIDC) authentication stub and interface.
 
-use crate::error::{JellyfinError, Result};
+use crate::error::{Error, JellyfinResult as Result};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -118,7 +118,7 @@ impl KeycloakOidcClient {
     fn build_endpoint(&self, path_suffix: &str) -> Result<Url> {
         let base_str = self.config.issuer_url.as_str().trim_end_matches('/');
         let full = format!("{}/protocol/openid-connect/{}", base_str, path_suffix);
-        Url::parse(&full).map_err(JellyfinError::from)
+        Url::parse(&full).map_err(|err| Error::Oidc(err.to_string()))
     }
 
     /// Exchanges an authorization code (and optional PKCE code verifier) for tokens.
@@ -143,17 +143,16 @@ impl KeycloakOidcClient {
             req = req.basic_auth(&self.config.client_id, Some(secret));
         }
 
-        let res = req.send().await?;
+        let res = req.send().await.map_err(oidc_err)?;
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(JellyfinError::Api {
-                status,
-                message: format!("OIDC token exchange failed: {}", body),
-            });
+            return Err(Error::Oidc(format!(
+                "OIDC token exchange failed: HTTP {status}: {body}"
+            )));
         }
 
-        let token_resp = res.json::<OidcTokenResponse>().await?;
+        let token_resp = res.json::<OidcTokenResponse>().await.map_err(oidc_err)?;
         Ok(token_resp)
     }
 
@@ -171,17 +170,16 @@ impl KeycloakOidcClient {
             req = req.basic_auth(&self.config.client_id, Some(secret));
         }
 
-        let res = req.send().await?;
+        let res = req.send().await.map_err(oidc_err)?;
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(JellyfinError::Api {
-                status,
-                message: format!("OIDC token refresh failed: {}", body),
-            });
+            return Err(Error::Oidc(format!(
+                "OIDC token refresh failed: HTTP {status}: {body}"
+            )));
         }
 
-        let token_resp = res.json::<OidcTokenResponse>().await?;
+        let token_resp = res.json::<OidcTokenResponse>().await.map_err(oidc_err)?;
         Ok(token_resp)
     }
 
@@ -193,18 +191,18 @@ impl KeycloakOidcClient {
             .get(userinfo_url)
             .bearer_auth(access_token)
             .send()
-            .await?;
+            .await
+            .map_err(oidc_err)?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(JellyfinError::Api {
-                status,
-                message: format!("OIDC userinfo failed: {}", body),
-            });
+            return Err(Error::Oidc(format!(
+                "OIDC userinfo failed: HTTP {status}: {body}"
+            )));
         }
 
-        let user_info = res.json::<OidcUserInfo>().await?;
+        let user_info = res.json::<OidcUserInfo>().await.map_err(oidc_err)?;
         Ok(user_info)
     }
 }
@@ -269,6 +267,10 @@ impl OidcProvider for MockOidcProvider {
     fn userinfo_endpoint(&self) -> Result<Url> {
         Ok(self.userinfo_url.clone())
     }
+}
+
+fn oidc_err(err: reqwest::Error) -> Error {
+    Error::Oidc(err.without_url().to_string())
 }
 
 #[cfg(test)]

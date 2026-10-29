@@ -1,7 +1,7 @@
 //! PlaybackInfo request and response models, direct play URL formatting.
 
 use crate::device_profile::DeviceProfile;
-use crate::models::MediaStream;
+use crate::library::MediaStream;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -52,7 +52,7 @@ impl PlaybackInfoRequest {
 }
 
 /// A media source returned by Jellyfin PlaybackInfo.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSource {
     /// Media source ID.
@@ -80,7 +80,7 @@ pub struct MediaSource {
 }
 
 /// Response returned from `POST /Items/{id}/PlaybackInfo`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlaybackInfoResponse {
     /// Candidate media sources for playback.
@@ -92,22 +92,30 @@ pub struct PlaybackInfoResponse {
     pub error_code: Option<String>,
 }
 
-/// Helper to build direct play stream URLs: `/Videos/{id}/stream?static=true`.
+/// Direct play stream URL: `{base_url}/Videos/{id}/stream?static=true[&api_key=..]`.
+///
+/// `base_url` is the client's normalized base URL (no trailing slash, subpath kept).
+///
+/// # Errors
+///
+/// Returns [`crate::Error::InvalidUrl`] when the result is not a valid URL.
 pub fn build_direct_play_url(
-    base_url: &Url,
+    base_url: &str,
     item_id: &str,
     token: Option<&str>,
-) -> crate::error::Result<Url> {
-    let path = format!("Videos/{}/stream", item_id);
-    let mut joined = base_url.join(&path)?;
+) -> crate::JellyfinResult<Url> {
+    let base = base_url.trim_end_matches('/');
+    let id = crate::identity::encode_component(item_id);
+    let mut url = Url::parse(&format!("{base}/Videos/{id}/stream"))
+        .map_err(|err| crate::Error::InvalidUrl(err.to_string()))?;
     {
-        let mut query = joined.query_pairs_mut();
+        let mut query = url.query_pairs_mut();
         query.append_pair("static", "true");
         if let Some(tok) = token {
             query.append_pair("api_key", tok);
         }
     }
-    Ok(joined)
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -116,8 +124,8 @@ mod tests {
 
     #[test]
     fn test_build_direct_play_url_without_token() {
-        let base = Url::parse("https://jellyfin.archerfamily.io/").unwrap();
-        let url = build_direct_play_url(&base, "item-12345", None).unwrap();
+        let url =
+            build_direct_play_url("https://jellyfin.archerfamily.io", "item-12345", None).unwrap();
         assert_eq!(
             url.as_str(),
             "https://jellyfin.archerfamily.io/Videos/item-12345/stream?static=true"
@@ -126,8 +134,12 @@ mod tests {
 
     #[test]
     fn test_build_direct_play_url_with_token() {
-        let base = Url::parse("https://jellyfin.archerfamily.io/").unwrap();
-        let url = build_direct_play_url(&base, "item-12345", Some("tok-abc")).unwrap();
+        let url = build_direct_play_url(
+            "https://jellyfin.archerfamily.io",
+            "item-12345",
+            Some("tok-abc"),
+        )
+        .unwrap();
         assert_eq!(
             url.as_str(),
             "https://jellyfin.archerfamily.io/Videos/item-12345/stream?static=true&api_key=tok-abc"

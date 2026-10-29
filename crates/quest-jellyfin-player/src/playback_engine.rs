@@ -1,9 +1,10 @@
 //! Hardware video decoder pipeline, presentation clock synchronizer, and Jellyfin session coordination.
 
 use crate::error::{PlayerError, Result};
+use crate::format::{detect_item_format, DetectedStereoFormat};
 use jellyfin_client::{
-    DetectedStereoFormat, JellyfinClient, MediaItem, PlayMethod, PlaybackProgressRequest,
-    PlaybackStartRequest, PlaybackStopRequest, StreamType,
+    BaseItem, JellyfinClient, MediaStreamType, PlayMethod, PlaybackProgressRequest,
+    PlaybackStartRequest, PlaybackStopRequest,
 };
 use url::Url;
 use xr_video::audio::sync::AvSynchronizer;
@@ -25,7 +26,7 @@ pub struct PlaybackEngine {
     decoder: Box<dyn HardwareVideoDecoder>,
     clock: AvSynchronizer,
     state: PlaybackState,
-    current_item: Option<MediaItem>,
+    current_item: Option<BaseItem>,
     play_session_id: Option<String>,
     direct_play_url: Option<Url>,
     detected_format: Option<DetectedStereoFormat>,
@@ -74,19 +75,25 @@ impl PlaybackEngine {
     }
 
     /// Loads a media item, queries PlaybackInfo, detects 3D format, and configures the hardware decoder.
-    pub async fn load_item(&mut self, item: MediaItem) -> Result<()> {
-        let detected = self.client.detect_stereo_format(&item);
-        let playback_info = self.client.get_playback_info(&item.id, None).await?;
-        let stream_url = self.client.direct_play_url(&item.id).await?;
+    pub async fn load_item(&mut self, item: BaseItem) -> Result<()> {
+        let detected = detect_item_format(&item);
+        let playback_info = self.client.playback_info(&item.id, None).await?;
+        let stream_url = self.client.direct_play_url(&item.id)?;
 
         // Find primary video stream for decoder configuration
         let video_stream = item
             .media_streams
             .iter()
-            .find(|s| s.stream_type == Some(StreamType::Video));
+            .find(|s| s.stream_type == Some(MediaStreamType::Video));
 
-        let width = video_stream.and_then(|s| s.width).unwrap_or(1920);
-        let height = video_stream.and_then(|s| s.height).unwrap_or(1080);
+        let width = video_stream
+            .and_then(|s| s.width)
+            .and_then(|w| u32::try_from(w).ok())
+            .unwrap_or(1920);
+        let height = video_stream
+            .and_then(|s| s.height)
+            .and_then(|h| u32::try_from(h).ok())
+            .unwrap_or(1080);
         let codec = match video_stream
             .and_then(|s| s.codec.as_deref())
             .unwrap_or("hevc")

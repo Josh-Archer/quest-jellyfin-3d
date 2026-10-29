@@ -66,20 +66,19 @@ quest-jellyfin-3d/
 ├── Cargo.toml                       # Cargo workspace declaration
 ├── crates/
 │   ├── jellyfin-player/             # App crate (from scaffold)
-│   ├── jellyfin-client/             # Pure Rust Jellyfin REST API client (no Android deps, host-testable)
+│   ├── jellyfin/                    # `jellyfin-client` crate: pure Rust Jellyfin REST client (host-testable)
 │   │   ├── src/
-│   │   │   ├── auth.rs              # ClientInfo and Session headers
-│   │   │   ├── client.rs            # JellyfinClient async API
-│   │   │   ├── device_profile.rs    # Quest 3+ device profile & evaluation
-│   │   │   ├── format_detection.rs  # Video3DFormat & filename tag detection
-│   │   │   ├── models.rs            # Item, Stream, and Browse models
+│   │   │   ├── client.rs            # JellyfinClient: QuickConnect, browse, PlaybackInfo, session reporting
+│   │   │   ├── device_profile.rs    # Quest 3 device profile & direct play evaluation
+│   │   │   ├── library.rs           # BaseItem, MediaStream, Video3DFormat
 │   │   │   ├── oidc.rs              # Keycloak OpenID Connect stub & client
 │   │   │   ├── playback.rs          # PlaybackInfo & direct play URL builder
-│   │   │   ├── quick_connect.rs     # QuickConnect pairing API
-│   │   │   └── sessions.rs          # Playing, Progress, Stopped reporting
+│   │   │   ├── sessions.rs          # Playing, Progress, Stopped request bodies
+│   │   │   └── store.rs             # TokenStore / MemoryTokenStore
 │   │   └── tests/                   # Fixtures & Wiremock integration tests
 │   └── quest-jellyfin-player/       # Stereo rendering & XR playback engine
 │       ├── src/
+│       │   ├── format.rs            # Item stereo detection (xr_video::format) + eye order
 │       │   ├── stereo.rs            # SBS/OU UV math & aspect ratio calculations
 │       │   ├── virtual_screen.rs    # Flat quad & cylinder OpenXR layer construction
 │       │   └── playback_engine.rs   # Hardware decoder pipeline & session coordination
@@ -88,13 +87,13 @@ quest-jellyfin-3d/
 ```
 
 ### Dependencies on `xr-core` and `xr-video`
-These reusable XR foundation crates are consumed from DeskQuest#198 (pinned to `8a2b13d9afc1b61deefe480dc16d11cf879f3021`; bump `rev` in `Cargo.toml` to pick up changes):
+These reusable XR foundation crates are consumed from DeskQuest#198 (pinned to `6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3`; bump `rev` in `Cargo.toml` to pick up changes):
 ```toml
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "8a2b13d9afc1b61deefe480dc16d11cf879f3021" }
+xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
+xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
 ```
 - `xr-core`: Reusable OpenXR session, passthrough, quad/cylinder composition layers, and spatial models.
-- `xr-video`: Zero-copy hardware video decoder abstraction (`HardwareVideoDecoder`, `MockHardwareDecoder`), stereo layouts, and A/V synchronizer (`AvSynchronizer`).
+- `xr-video`: Zero-copy hardware video decoder abstraction (`HardwareVideoDecoder`, `MockHardwareDecoder`), stereo/projection detection (`xr_video::format`, DeskQuest#220), stereo layouts, and A/V synchronizer (`AvSynchronizer`).
 
 ---
 

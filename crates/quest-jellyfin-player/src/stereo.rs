@@ -1,7 +1,7 @@
 //! Stereoscopic layout partitioning, UV coordinate math, and aspect ratio computation.
 
 use crate::error::{PlayerError, Result};
-use jellyfin_client::{EyeOrder, StereoFormat};
+use crate::format::{EyeOrder, StereoFormat};
 use serde::{Deserialize, Serialize};
 pub use xr_video::stereo::{Eye, EyeRegion};
 
@@ -96,8 +96,8 @@ pub fn calculate_eye_uv(format: StereoFormat, eye_order: EyeOrder, eye: Eye) -> 
             }
         }
 
-        StereoFormat::Mvc => {
-            // MVC decodes to independent full views; primary view displays full frame
+        StereoFormat::Mvc | StereoFormat::MvHevc | StereoFormat::Unspecified3d => {
+            // Unknown packing renders as mono; MVC decodes to independent full views; primary view displays full frame
             NormalizedUvRect::FULL_FRAME
         }
     }
@@ -118,7 +118,10 @@ pub fn calculate_eye_pixel_rect(
     }
 
     match format {
-        StereoFormat::Mono | StereoFormat::Mvc => Ok(StereoPixelRect {
+        StereoFormat::Mono
+        | StereoFormat::Mvc
+        | StereoFormat::MvHevc
+        | StereoFormat::Unspecified3d => Ok(StereoPixelRect {
             x: 0,
             y: 0,
             width,
@@ -192,7 +195,10 @@ pub fn calculate_display_aspect_ratio(format: StereoFormat, width: u32, height: 
     let h = height as f32;
 
     match format {
-        StereoFormat::Mono | StereoFormat::Mvc => w / h,
+        StereoFormat::Mono
+        | StereoFormat::Mvc
+        | StereoFormat::MvHevc
+        | StereoFormat::Unspecified3d => w / h,
         StereoFormat::HalfSideBySide => w / h,
         StereoFormat::FullSideBySide => (w / 2.0) / h,
         StereoFormat::HalfOverUnder => w / h,

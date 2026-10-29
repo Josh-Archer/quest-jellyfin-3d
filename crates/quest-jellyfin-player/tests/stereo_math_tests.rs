@@ -1,8 +1,8 @@
-use jellyfin_client::{EyeOrder, StereoFormat};
 use quest_jellyfin_player::{
     calculate_display_aspect_ratio, calculate_eye_pixel_rect, calculate_eye_uv, Eye,
     NormalizedUvRect, StereoPixelRect,
 };
+use quest_jellyfin_player::{EyeOrder, StereoFormat};
 
 #[test]
 fn test_uv_math_all_formats_and_permutations() {

@@ -9,7 +9,7 @@ pub type Result<T> = std::result::Result<T, PlayerError>;
 #[derive(Debug, Error)]
 pub enum PlayerError {
     #[error("Jellyfin error: {0}")]
-    Jellyfin(#[from] jellyfin_client::JellyfinError),
+    Jellyfin(#[from] jellyfin_client::Error),
 
     #[error("Video decode error: {0}")]
     Decode(#[from] xr_video::MediaError),

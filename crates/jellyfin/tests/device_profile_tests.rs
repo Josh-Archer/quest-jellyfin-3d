@@ -1,6 +1,6 @@
 use jellyfin_client::{
-    evaluate_direct_play, quest_device_profile, DirectPlayDecision, MediaItem, MediaStream,
-    StreamType,
+    evaluate_direct_play, quest_device_profile, BaseItem, DirectPlayDecision, MediaStream,
+    MediaStreamType,
 };
 
 #[test]
@@ -45,15 +45,14 @@ fn test_quest_device_profile_limits() {
 fn test_direct_play_hevc_8k30_boundary() {
     let profile = quest_device_profile();
 
-    let mut item = MediaItem {
+    let mut item = BaseItem {
         id: "8k-test".to_string(),
         name: "8K Video".to_string(),
-        original_title: None,
         path: Some("/media/video.mkv".to_string()),
         video_3d_format: None,
         media_streams: vec![MediaStream {
             codec: Some("hevc".to_string()),
-            stream_type: Some(StreamType::Video),
+            stream_type: Some(MediaStreamType::Video),
             width: Some(7680),
             height: Some(4320),
             real_frame_rate: Some(30.0),
@@ -61,9 +60,8 @@ fn test_direct_play_hevc_8k30_boundary() {
         }],
         container: Some("mkv".to_string()),
         run_time_ticks: None,
-        overview: None,
         item_type: Some("Movie".to_string()),
-        user_data: None,
+        ..Default::default()
     };
 
     // 8K 30fps: Direct Play
@@ -97,24 +95,22 @@ fn test_direct_play_unsupported_container_and_codec() {
     let profile = quest_device_profile();
 
     // Unsupported container (.avi)
-    let avi_item = MediaItem {
+    let avi_item = BaseItem {
         id: "avi-test".to_string(),
         name: "Old Video".to_string(),
-        original_title: None,
         path: Some("/media/old.avi".to_string()),
         video_3d_format: None,
         media_streams: vec![MediaStream {
             codec: Some("hevc".to_string()),
-            stream_type: Some(StreamType::Video),
+            stream_type: Some(MediaStreamType::Video),
             width: Some(1920),
             height: Some(1080),
             ..Default::default()
         }],
         container: Some("avi".to_string()),
         run_time_ticks: None,
-        overview: None,
         item_type: Some("Movie".to_string()),
-        user_data: None,
+        ..Default::default()
     };
     match evaluate_direct_play(&profile, &avi_item) {
         DirectPlayDecision::TranscodeRequired { reason } => {
@@ -128,24 +124,22 @@ fn test_direct_play_unsupported_container_and_codec() {
     }
 
     // Unsupported codec (vc1)
-    let vc1_item = MediaItem {
+    let vc1_item = BaseItem {
         id: "vc1-test".to_string(),
         name: "VC1 Video".to_string(),
-        original_title: None,
         path: Some("/media/video.mkv".to_string()),
         video_3d_format: None,
         media_streams: vec![MediaStream {
             codec: Some("vc1".to_string()),
-            stream_type: Some(StreamType::Video),
+            stream_type: Some(MediaStreamType::Video),
             width: Some(1920),
             height: Some(1080),
             ..Default::default()
         }],
         container: Some("mkv".to_string()),
         run_time_ticks: None,
-        overview: None,
         item_type: Some("Movie".to_string()),
-        user_data: None,
+        ..Default::default()
     };
     match evaluate_direct_play(&profile, &vc1_item) {
         DirectPlayDecision::TranscodeRequired { reason } => {
