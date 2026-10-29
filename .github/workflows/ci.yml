@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    # ARC scale set from Josh-Archer/home PR #3956.
+    runs-on: home-gh-runner-quest-jellyfin-3d
+    steps:
+      - uses: actions/checkout@v4
+      # DeskQuest is private: needs read-only deploy key in secret DESKQUEST_DEPLOY_KEY (Josh must add).
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DESKQUEST_DEPLOY_KEY }}
+      - name: Route DeskQuest git deps via SSH
+        run: git config --global url."git@github.com:Josh-Archer/DeskQuest".insteadOf "https://github.com/Josh-Archer/DeskQuest"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev || true
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
