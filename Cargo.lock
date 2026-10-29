@@ -609,6 +609,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 
@@ -906,6 +907,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quest-jellyfin-player"
+version = "0.1.0"
+dependencies = [
+ "jellyfin-client",
+ "openxr",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+ "xr-core",
+ "xr-video",
 ]
 
 [[package]]
@@ -1558,6 +1576,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1880,7 +1899,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xr-core"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/DeskQuest?rev=8a2b13d9afc1b61deefe480dc16d11cf879f3021#8a2b13d9afc1b61deefe480dc16d11cf879f3021"
+source = "git+https://github.com/Josh-Archer/DeskQuest?rev=6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3#6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3"
 dependencies = [
  "ash",
  "libc",
@@ -1898,7 +1917,7 @@ dependencies = [
 [[package]]
 name = "xr-video"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/DeskQuest?rev=8a2b13d9afc1b61deefe480dc16d11cf879f3021#8a2b13d9afc1b61deefe480dc16d11cf879f3021"
+source = "git+https://github.com/Josh-Archer/DeskQuest?rev=6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3#6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3"
 dependencies = [
  "ash",
  "audiopus",

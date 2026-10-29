@@ -1,4 +1,4 @@
-//! HTTP calls for QuickConnect and library browse.
+//! HTTP calls for QuickConnect, library browse, PlaybackInfo, and session reporting.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,19 +7,26 @@ use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 
+use crate::device_profile::{quest_device_profile, DeviceProfile};
 use crate::error::{scrub_secret, truncate_body, Error, JellyfinResult};
 use crate::identity::{authorization_header, ClientIdentity};
 use crate::json::parse;
 use crate::library::{ItemPage, ItemsQuery, ItemsResponse};
+use crate::playback::{build_direct_play_url, PlaybackInfoRequest, PlaybackInfoResponse};
 use crate::quick_connect::{
     AuthenticationResult, QuickConnectChallenge, QuickConnectPoll, QuickConnectResult,
 };
+use crate::sessions::{PlaybackProgressRequest, PlaybackStartRequest, PlaybackStopRequest};
 use crate::store::{StoredSession, TokenStore};
 
 const INITIATE_PATH: &str = "/QuickConnect/Initiate";
 const CONNECT_PATH: &str = "/QuickConnect/Connect";
 const EXCHANGE_PATH: &str = "/Users/AuthenticateWithQuickConnect";
 const ITEMS_PATH: &str = "/Items";
+const PLAYBACK_INFO_PATH: &str = "/Items/{id}/PlaybackInfo";
+const PLAYING_PATH: &str = "/Sessions/Playing";
+const PROGRESS_PATH: &str = "/Sessions/Playing/Progress";
+const STOPPED_PATH: &str = "/Sessions/Playing/Stopped";
 
 /// Headless Jellyfin client for the 3D player.
 ///
@@ -240,6 +247,82 @@ impl JellyfinClient {
         Ok(response.into_page())
     }
 
+    /// `POST /Items/{id}/PlaybackInfo` with the Quest 3 device profile
+    /// ([`crate::quest_device_profile`]) unless `profile_override` is given.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] when no access token is loaded.
+    pub async fn playback_info(
+        &self,
+        item_id: &str,
+        profile_override: Option<DeviceProfile>,
+    ) -> JellyfinResult<PlaybackInfoResponse> {
+        if self.access_token().is_none() {
+            return Err(Error::NotSignedIn);
+        }
+        let profile = profile_override.unwrap_or_else(quest_device_profile);
+        let user_id = self
+            .session()
+            .map(|session| session.user_id)
+            .filter(|id| !id.is_empty());
+        let request = PlaybackInfoRequest::new(user_id, profile);
+        let body = serde_json::to_value(&request).map_err(|err| Error::Decode(err.to_string()))?;
+        let url_path = format!(
+            "/Items/{}/PlaybackInfo",
+            crate::identity::encode_component(item_id)
+        );
+        let value = self
+            .send(
+                Method::POST,
+                PLAYBACK_INFO_PATH,
+                &url_path,
+                &[],
+                Some(&body),
+                None,
+            )
+            .await?
+            .ok_or(Error::Decode("empty PlaybackInfo response".to_owned()))?;
+        parse(value).map_err(|err| Error::Decode(err.to_string()))
+    }
+
+    /// Direct play URL (`/Videos/{id}/stream?static=true&api_key=..`) for the
+    /// hardware decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidUrl`] if the URL cannot be built.
+    pub fn direct_play_url(&self, item_id: &str) -> JellyfinResult<url::Url> {
+        build_direct_play_url(&self.base_url, item_id, self.access_token().as_deref())
+    }
+
+    /// `POST /Sessions/Playing`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] when no access token is loaded.
+    pub async fn report_playing(&self, request: &PlaybackStartRequest) -> JellyfinResult<()> {
+        self.post_session_report(PLAYING_PATH, request).await
+    }
+
+    /// `POST /Sessions/Playing/Progress` (time updates, pause, unpause).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] when no access token is loaded.
+    pub async fn report_progress(&self, request: &PlaybackProgressRequest) -> JellyfinResult<()> {
+        self.post_session_report(PROGRESS_PATH, request).await
+    }
+
+    /// `POST /Sessions/Playing/Stopped`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] when no access token is loaded.
+    pub async fn report_stopped(&self, request: &PlaybackStopRequest) -> JellyfinResult<()> {
+        self.post_session_report(STOPPED_PATH, request).await
+    }
+
     async fn exchange_secret(&self, secret: &str) -> JellyfinResult<StoredSession> {
         let body = serde_json::json!({ "Secret": secret });
         let result: AuthenticationResult = self
@@ -272,7 +355,26 @@ impl JellyfinClient {
         body: Option<&serde_json::Value>,
         secret: Option<&str>,
     ) -> JellyfinResult<T> {
-        let url = format!("{}{path}", self.base_url);
+        let value = self
+            .send(method, path, path, query, body, secret)
+            .await?
+            .ok_or(Error::Decode("empty response body".to_owned()))?;
+        parse(value).map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))
+    }
+
+    /// Send a request to `url_path` (may embed an item id). `label` is the
+    /// static route used in errors and logs. Returns `None` for an empty body
+    /// (for example `204 No Content` from the session endpoints).
+    async fn send(
+        &self,
+        method: Method,
+        label: &'static str,
+        url_path: &str,
+        query: &[(String, String)],
+        body: Option<&serde_json::Value>,
+        secret: Option<&str>,
+    ) -> JellyfinResult<Option<serde_json::Value>> {
+        let url = format!("{}{url_path}", self.base_url);
         let mut builder = self
             .http
             .request(method.clone(), &url)
@@ -288,20 +390,38 @@ impl JellyfinClient {
             .await
             .map_err(|err| Error::Transport(scrub_secret(&err.to_string(), secret)))?;
         let status = response.status();
-        tracing::debug!(%method, path, status = status.as_u16(), "jellyfin response");
+        tracing::debug!(%method, path = label, status = status.as_u16(), "jellyfin response");
+        let body_text = response
+            .text()
+            .await
+            .map_err(|err| Error::Transport(scrub_secret(&err.to_string(), secret)))?;
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
             return Err(status_error(
-                path,
+                label,
                 status,
                 &scrub_secret(&body_text, secret),
             ));
         }
-        let value = response
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))?;
-        parse(value).map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))
+        if body_text.trim().is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str(&body_text)
+            .map(Some)
+            .map_err(|err| Error::Decode(scrub_secret(&err.to_string(), secret)))
+    }
+
+    async fn post_session_report<B: serde::Serialize>(
+        &self,
+        path: &'static str,
+        body: &B,
+    ) -> JellyfinResult<()> {
+        if self.access_token().is_none() {
+            return Err(Error::NotSignedIn);
+        }
+        let body = serde_json::to_value(body).map_err(|err| Error::Decode(err.to_string()))?;
+        self.send(Method::POST, path, path, &[], Some(&body), None)
+            .await?;
+        Ok(())
     }
 
     fn authorization_value(&self) -> HeaderValue {

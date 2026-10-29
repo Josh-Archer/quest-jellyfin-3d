@@ -60,6 +60,14 @@ pub enum Error {
     #[error("not signed in")]
     NotSignedIn,
 
+    /// Keycloak/OpenID Connect discovery, token, or userinfo call failed.
+    #[error("oidc: {0}")]
+    Oidc(String),
+
+    /// A URL could not be built from the server base URL and an item id.
+    #[error("invalid url: {0}")]
+    InvalidUrl(String),
+
     /// [`crate::TokenStore`] failed while loading, saving, or clearing a session.
     #[error("token store: {0}")]
     Store(#[source] StoreError),
