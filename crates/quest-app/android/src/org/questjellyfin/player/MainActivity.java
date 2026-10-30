@@ -34,6 +34,7 @@ public class MainActivity extends Activity {
     private static final int BG = Color.rgb(16, 17, 24), CARD = Color.rgb(30, 32, 44), ACCENT = Color.rgb(0, 164, 220);
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService images = Executors.newFixedThreadPool(3);
+    private final ExecutorService reads = Executors.newFixedThreadPool(2);
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final LruCache<String, Bitmap> posterCache = new LruCache<String, Bitmap>(24 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap image) { return image.getAllocationByteCount(); }
@@ -75,7 +76,9 @@ public class MainActivity extends Activity {
         final int current = generation;
         try {
             String raw = envelope(action, extra).toString();
-            io.execute(() -> {
+            boolean readOnly = action.equals("browse") || action.equals("details") || action.equals("prepare") || action.equals("libraries") || action.equals("resume");
+            (readOnly ? reads : io).execute(() -> {
+                if (readOnly && (current != generation || !targetServer.equals(server))) return;
                 JSONObject reply;
                 try { reply = new JSONObject(nativeRequest(raw)); }
                 catch (Exception e) { reply = value("ok", false); with(reply, "error", "Could not read the server response."); }
@@ -466,5 +469,5 @@ public class MainActivity extends Activity {
     }
     @Override public void onBackPressed() { if (backAction != null) backAction.run(); else super.onBackPressed(); }
     @Override protected void onStop() { super.onStop(); if (video != null) { String item = activeItem; stopPlayback(); details(item); } }
-    @Override protected void onDestroy() { generation++; io.shutdown(); images.shutdownNow(); posterCache.evictAll(); super.onDestroy(); }
+    @Override protected void onDestroy() { generation++; io.shutdown(); reads.shutdownNow(); images.shutdownNow(); posterCache.evictAll(); super.onDestroy(); }
 }
