@@ -99,6 +99,7 @@ async fn browse_filters_series_favorites_and_episode_order_on_the_server() {
         ("movies", "Movie"),
         ("shows", "Series"),
         ("episodes", "Episode"),
+        ("favorites", "Movie,Series,Episode,Video"),
     ] {
         let mut mock = Mock::given(method("GET"))
             .and(path("/Items"))

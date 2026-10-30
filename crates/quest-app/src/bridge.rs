@@ -127,6 +127,18 @@ pub async fn run(v: Value) -> Result<Value, String> {
                         Some("movies") => vec!["Movie".into()],
                         Some("shows") => vec!["Series".into()],
                         Some("episodes") => vec!["Episode".into()],
+                        Some("favorites") => vec![
+                            "Movie".into(),
+                            "Series".into(),
+                            "Episode".into(),
+                            "Video".into(),
+                        ],
+                        _ if v["search"].as_str().is_some_and(|s| !s.trim().is_empty()) => vec![
+                            "Movie".into(),
+                            "Series".into(),
+                            "Episode".into(),
+                            "Video".into(),
+                        ],
                         _ => vec!["Movie".into(), "Series".into(), "Video".into()],
                     },
                     ..Default::default()

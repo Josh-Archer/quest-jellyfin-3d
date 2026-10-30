@@ -151,6 +151,10 @@ async fn library_search_passes_the_term_and_page_to_jellyfin() {
     Mock::given(method("GET"))
         .and(path("/Items"))
         .and(query_param("SearchTerm", "Avatar"))
+        .and(query_param(
+            "IncludeItemTypes",
+            "Movie,Series,Episode,Video",
+        ))
         .and(query_param("StartIndex", "50"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
             json!({"Items":[{"Id":"one","Name":"Avatar"}],"StartIndex":50,"TotalRecordCount":52}),
