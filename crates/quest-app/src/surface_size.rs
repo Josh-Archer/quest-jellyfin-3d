@@ -14,6 +14,14 @@ impl SurfaceSize {
         format: StereoFormat,
         order: EyeOrder,
     ) -> Result<Self, String> {
+        if matches!(
+            format,
+            StereoFormat::Mvc | StereoFormat::MvHevc | StereoFormat::Unspecified3d
+        ) {
+            return Err(
+                "Stereo format requires a supported two-view decoder or explicit packing".into(),
+            );
+        }
         // Mono's eye-layer helper does not check dimensions; validate them here too.
         if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
             return Err("Invalid decoded video dimensions".into());
@@ -46,6 +54,16 @@ mod tests {
         assert!(
             SurfaceSize::new(1280, 719, StereoFormat::FullOverUnder, EyeOrder::TopBottom).is_err()
         );
+    }
+    #[test]
+    fn rejects_formats_that_cannot_be_cropped_into_two_views() {
+        for format in [
+            StereoFormat::Mvc,
+            StereoFormat::MvHevc,
+            StereoFormat::Unspecified3d,
+        ] {
+            assert!(SurfaceSize::new(1920, 1080, format, EyeOrder::LeftRight).is_err());
+        }
     }
     #[test]
     fn rejects_empty_and_overflowing_mono_frames() {
