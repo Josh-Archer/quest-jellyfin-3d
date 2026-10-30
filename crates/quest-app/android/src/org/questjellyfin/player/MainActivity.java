@@ -134,9 +134,11 @@ public class MainActivity extends Activity {
         String projection = data.optString("projection", "Flat");
         String format = data.optString("format", "Mono");
         showStatus("Format: " + format + " • Projection: " + projection + " • " + data.optString("method"));
-        boolean supported = data.optString("method").equals("DirectPlay") && projection.equals("Flat") && !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width", 0) > 0 && data.optInt("height", 0) > 0;
+        boolean supported = projection.equals("Flat") && !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width", 0) > 0 && data.optInt("height", 0) > 0;
         CheckBox passthrough = new CheckBox(this); passthrough.setText("Passthrough background"); passthrough.setTextColor(Color.WHITE); root.addView(passthrough);
         root.addView(label("In immersive mode: trigger pauses or resumes; thumbstick left/right seeks 10 seconds; grip cycles audio tracks."));
+        if (!data.optString("method").equals("DirectPlay")) root.addView(label("Server transcoding may change resolution, bitrate, or HDR. Immersive playback is experimental."));
+        if (format.equals("Mvc") || format.equals("MvHevc")) root.addView(label("This multiview format is not supported in stereo. The 2D preview may show only one view."));
         if (supported) root.addView(button("Watch in immersive 3D", v -> {
             Intent intent = new Intent(this, VrActivity.class);
             intent.addCategory("com.oculus.intent.category.VR");

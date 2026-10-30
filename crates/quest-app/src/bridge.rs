@@ -99,7 +99,14 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 });
             let width = stream.and_then(|s| s.width).filter(|v| *v > 0);
             let height = stream.and_then(|s| s.height).filter(|v| *v > 0);
-            let format = quest_jellyfin_player::detect_item_format(&item);
+            let mut source_item = item.clone();
+            if !source.media_streams.is_empty() {
+                source_item.media_streams = source.media_streams.clone();
+            }
+            if let Some(path) = &source.path {
+                source_item.path = Some(path.clone());
+            }
+            let format = quest_jellyfin_player::detect_item_format(&source_item);
             let resume = item
                 .user_data
                 .as_ref()

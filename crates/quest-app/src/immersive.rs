@@ -14,6 +14,7 @@ use xr_video::graphics::vulkan::VulkanContext;
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static XR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static VIDEO_SIZE: std::sync::Mutex<Option<(u64, u32, u32)>> = std::sync::Mutex::new(None);
 
 struct AndroidContextGuard;
 impl Drop for AndroidContextGuard {
@@ -38,6 +39,28 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeArm(
     _: JObject<'_>,
 ) -> jlong {
     EPOCH.fetch_add(1, Ordering::AcqRel).wrapping_add(1) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeVideoSize(
+    _: JNIEnv<'_>,
+    _: JObject<'_>,
+    epoch: jlong,
+    width: i32,
+    height: i32,
+) {
+    if EPOCH.load(Ordering::Acquire) != epoch as u64 {
+        return;
+    }
+    if let (Ok(width), Ok(height), Ok(mut pending)) = (
+        u32::try_from(width),
+        u32::try_from(height),
+        VIDEO_SIZE.lock(),
+    ) {
+        if width > 0 && height > 0 {
+            *pending = Some((epoch as u64, width, height));
+        }
+    }
 }
 
 #[no_mangle]
@@ -90,8 +113,7 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                 u32::try_from(height).map_err(|_| "Invalid video height")?,
             );
             // Validate packing before creating a compositor surface.
-            quest_jellyfin_player::build_stereo_eye_layer_specs(format, order, width, height)
-                .map_err(|e| e.to_string())?;
+            crate::surface_size::SurfaceSize::new(width, height, format, order)?;
             let vm = env.get_java_vm().map_err(|_| "No Android VM")?;
             let global = env
                 .new_global_ref(&activity)
@@ -162,6 +184,7 @@ fn run_xr(
     if passthrough && !xr.is_passthrough_enabled() {
         return Err("Passthrough is unavailable on this headset".into());
     }
+    let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
     let mut controls = crate::controls::PlaybackControls::default();
     let mut surface_started = false;
     let screen = VirtualScreenConfig::default();
@@ -174,6 +197,27 @@ fn run_xr(
             }
             if !xr.swapchains_created() {
                 xr.create_swapchains(&config).map_err(|e| e.to_string())?;
+            }
+            if surface_started {
+                let pending = VIDEO_SIZE.lock().ok().and_then(|mut value| value.take());
+                if let Some((generation, width, height)) = pending {
+                    if generation == epoch && size.requires_resize(width, height) {
+                        let next =
+                            crate::surface_size::SurfaceSize::new(width, height, format, order)?;
+                        let detached = env
+                            .call_method(activity, "onXrDetachSurface", "()Z", &[])
+                            .map_err(|_| "Cannot detach video surface")?
+                            .z()
+                            .map_err(|_| "Invalid detach result")?;
+                        if !detached {
+                            return Err("Cannot detach video surface".into());
+                        }
+                        xr.resize_desktop_surface((width, height))
+                            .map_err(|e| e.to_string())?;
+                        size = next;
+                        surface_started = false;
+                    }
+                }
             }
             if !surface_started {
                 let window = xr
@@ -230,9 +274,16 @@ fn run_xr(
             }
             let space = xr.stage_space().ok_or("No OpenXR stage space")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
-            let layers =
-                build_stereo_quad_layers(space, swapchain, format, order, width, height, &screen)
-                    .map_err(|e| e.to_string())?;
+            let layers = build_stereo_quad_layers(
+                space,
+                swapchain,
+                format,
+                order,
+                size.width,
+                size.height,
+                &screen,
+            )
+            .map_err(|e| e.to_string())?;
             let pt_layer = xr
                 .passthrough()
                 .passthrough_layer()

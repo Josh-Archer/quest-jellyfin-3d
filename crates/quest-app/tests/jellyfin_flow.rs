@@ -163,3 +163,32 @@ async fn library_search_passes_the_term_and_page_to_jellyfin() {
     assert_eq!(response["next"], 51);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn selected_multiview_source_is_not_treated_as_mono_hevc() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-mvhevc-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "s".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET")).and(path("/Users/user/Items/movie")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"movie","Name":"Movie", "MediaStreams":[{"Type":"Video","Codec":"hevc","Width":1920,"Height":1080}]}))).mount(&server).await;
+    Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"source", "SupportsDirectPlay":true,"Path":"/media/Spatial.MV-HEVC.mp4","MediaStreams":[{"Type":"Video","Codec":"mv-hevc","Width":1920,"Height":1080}]}]}))).mount(&server).await;
+    let result = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"})).await.unwrap();
+    assert_eq!(result["format"], "MvHevc");
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -19,6 +19,7 @@ public class VrActivity extends Activity {
     private native String nativeRun(int width, int height, String format, String order, boolean passthrough, long epoch);
     private native void nativeStop();
     private native long nativeArm();
+    private native void nativeVideoSize(long epoch, int width, int height);
     private final ExecutorService xrThread = Executors.newSingleThreadExecutor();
     private final ExecutorService reports = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -31,6 +32,7 @@ public class VrActivity extends Activity {
     private boolean completed;
     private long lastTicks;
     private int generation;
+    private long xrEpoch;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -43,6 +45,7 @@ public class VrActivity extends Activity {
         super.onResume(); if (data == null) return; resumed = true;
         final int current = ++generation;
         final long epoch = nativeArm();
+        xrEpoch = epoch;
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
             String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), epoch);
@@ -55,16 +58,33 @@ public class VrActivity extends Activity {
             if (!resumed || isFinishing()) { nativeSurface.release(); return; }
             surface = nativeSurface;
             try {
+                if (player != null) {
+                    player.setSurface(surface);
+                    android.util.Log.i("Jellyfin3D", "Video surface rebound");
+                    return;
+                }
                 player = new MediaPlayer(); player.setSurface(surface);
+                final long epoch = xrEpoch;
+                player.setOnVideoSizeChangedListener((mp, width, height) -> {
+                    if (resumed && player == mp && width > 0 && height > 0) {
+                        nativeVideoSize(epoch, width, height);
+                    }
+                });
                 HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
                 player.setDataSource(this, Uri.parse(data.getString("url")), headers);
+                player.setOnInfoListener((mp, what, extra) -> {
+                    if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
+                        started = true; lastTicks = (long)mp.getCurrentPosition() * 10000;
+                        report("start", false); scheduleProgress(generation);
+                    }
+                    return false;
+                });
                 player.setOnPreparedListener(mp -> {
                     if (!resumed) return;
                     long resumeMs = data.optLong("resume") / 10000L;
                     Runnable begin = () -> {
                         if (!resumed || player != mp) return;
-                        mp.start(); started = true; lastTicks = (long)mp.getCurrentPosition() * 10000;
-                        report("start", false); scheduleProgress(generation);
+                        mp.start();
                     };
                     if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
                         mp.setOnSeekCompleteListener(ignored -> { mp.setOnSeekCompleteListener(null); begin.run(); });
@@ -76,6 +96,22 @@ public class VrActivity extends Activity {
                 player.prepareAsync();
             } catch (Exception e) { Toast.makeText(this, "Unable to open video", Toast.LENGTH_LONG).show(); finish(); }
         });
+    }
+    /** Detach the producer on the UI thread before OpenXR replaces its swapchain. */
+    public boolean onXrDetachSurface() {
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean detached = new java.util.concurrent.atomic.AtomicBoolean(false);
+        ui.post(() -> {
+            try {
+                if (resumed && player != null) {
+                    player.setSurface(null);
+                    if (surface != null) { surface.release(); surface = null; }
+                    detached.set(true);
+                }
+            } catch (IllegalStateException ignored) {} finally { latch.countDown(); }
+        });
+        try { return latch.await(3, java.util.concurrent.TimeUnit.SECONDS) && detached.get(); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
     }
     /** Controller shortcuts delivered by the OpenXR action set. */
     public void onXrCommand(int command) {

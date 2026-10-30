@@ -49,6 +49,7 @@ impl TokenStore for AppSessionStore {
 
 pub mod bridge;
 pub mod controls;
+pub mod surface_size;
 
 #[cfg(target_os = "android")]
 mod android;

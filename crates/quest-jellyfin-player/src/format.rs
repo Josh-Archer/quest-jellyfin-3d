@@ -38,9 +38,20 @@ pub struct DetectedStereoFormat {
 /// `FullTopAndBottom` / `HalfTopAndBottom`.
 pub fn detect_item_format(item: &BaseItem) -> DetectedStereoFormat {
     let detected = detect_format(None, item.path.as_deref(), ContainerHints::default());
-    let (format, source) = match item.video_3d_format.as_ref().and_then(jellyfin_stereo) {
-        Some(format) => (format, DetectionSource::Jellyfin),
-        None => (detected.stereo, detected.stereo_source),
+    let explicit_multiview = item.media_streams.iter().any(|stream| {
+        stream.codec.as_deref().is_some_and(is_mv_hevc_label)
+            || stream.profile.as_deref().is_some_and(is_mv_hevc_label)
+    });
+    let filename_multiview = item.path.as_deref().is_some_and(is_mv_hevc_filename);
+    let (format, source) = if explicit_multiview {
+        (StereoFormat::MvHevc, DetectionSource::Container)
+    } else if filename_multiview {
+        (StereoFormat::MvHevc, DetectionSource::Filename)
+    } else {
+        match item.video_3d_format.as_ref().and_then(jellyfin_stereo) {
+            Some(format) => (format, DetectionSource::Jellyfin),
+            None => (detected.stereo, detected.stereo_source),
+        }
     };
     let from_name = item.path.as_deref().and_then(eye_order_from_filename);
     let eye_order = match format {
@@ -69,8 +80,34 @@ fn jellyfin_stereo(value: &Video3DFormat) -> Option<StereoFormat> {
         Video3DFormat::HalfTopAndBottom => Some(StereoFormat::HalfOverUnder),
         Video3DFormat::FullTopAndBottom => Some(StereoFormat::FullOverUnder),
         Video3DFormat::Mvc => Some(StereoFormat::Mvc),
+        Video3DFormat::Other(other) if is_mv_hevc_label(other) => Some(StereoFormat::MvHevc),
         Video3DFormat::Other(other) => xr_video::format::jellyfin_stereo(other),
     }
+}
+
+fn is_mv_hevc_label(value: &str) -> bool {
+    let normalized: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    matches!(
+        normalized.as_str(),
+        "mvhevc" | "spatialmvhevc" | "multiviewhevc" | "multiviewmain" | "multiviewmain10"
+    )
+}
+
+fn is_mv_hevc_filename(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    let tokens: Vec<_> = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    tokens.iter().any(|token| is_mv_hevc_label(token))
+        || tokens
+            .windows(2)
+            .any(|pair| pair[0].eq_ignore_ascii_case("mv") && pair[1].eq_ignore_ascii_case("hevc"))
 }
 
 /// `RL`/`BT` (and `LR`/`TB`) as whole tokens of the basename.
@@ -131,6 +168,42 @@ mod tests {
             "/m/Movie_BT.mkv",
         ));
         assert_eq!(d.eye_order, EyeOrder::LeftRight);
+    }
+
+    #[test]
+    fn multiview_is_never_mistaken_for_ordinary_hevc_or_sbs() {
+        use jellyfin_client::MediaStream;
+        for label in ["MV-HEVC", "SpatialMvHevc", "Multiview Main 10"] {
+            let mut video = item(Some(Video3DFormat::HalfSideBySide), "/m/video.mkv");
+            video.media_streams = vec![MediaStream {
+                codec: Some(label.into()),
+                ..Default::default()
+            }];
+            assert_eq!(
+                detect_item_format(&video).format,
+                StereoFormat::MvHevc,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            detect_item_format(&item(None, "/m/video.MV-HEVC.mkv")).format,
+            StereoFormat::MvHevc
+        );
+        assert_eq!(
+            detect_item_format(&item(
+                Some(Video3DFormat::Other("SpatialMvHevc".into())),
+                "/m/video.mkv"
+            ))
+            .format,
+            StereoFormat::MvHevc
+        );
+        let mut regular = item(None, "/m/video.hevc.mkv");
+        regular.media_streams = vec![MediaStream {
+            codec: Some("hevc".into()),
+            profile: Some("Main 10".into()),
+            ..Default::default()
+        }];
+        assert_eq!(detect_item_format(&regular).format, StereoFormat::Mono);
     }
 
     #[test]
