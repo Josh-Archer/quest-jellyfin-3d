@@ -253,6 +253,70 @@ impl JellyfinClient {
         Ok(response.into_page())
     }
 
+    /// Library views available to the signed-in user, honoring server permissions.
+    pub async fn library_views(&self) -> JellyfinResult<ItemPage> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!("/Users/{}/Views", crate::identity::encode_component(&user));
+        let value = self
+            .send(Method::GET, "/Users/{userId}/Views", &path, &[], None, None)
+            .await?
+            .ok_or_else(|| Error::Decode("empty library response".into()))?;
+        let response: ItemsResponse = parse(value).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(response.into_page())
+    }
+
+    /// Resumable videos for Continue Watching.
+    pub async fn resume_items(&self) -> JellyfinResult<ItemPage> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!(
+            "/Users/{}/Items/Resume",
+            crate::identity::encode_component(&user)
+        );
+        let query = vec![
+            ("Limit".into(), "20".into()),
+            ("MediaTypes".into(), "Video".into()),
+            ("Fields".into(), "Overview,PrimaryImageAspectRatio".into()),
+            ("EnableUserData".into(), "true".into()),
+        ];
+        let value = self
+            .send(
+                Method::GET,
+                "/Users/{userId}/Items/Resume",
+                &path,
+                &query,
+                None,
+                None,
+            )
+            .await?
+            .ok_or_else(|| Error::Decode("empty resume response".into()))?;
+        let response: ItemsResponse = parse(value).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(response.into_page())
+    }
+
+    /// Set the signed-in user's favorite flag on a title.
+    pub async fn set_favorite(&self, item_id: &str, favorite: bool) -> JellyfinResult<()> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!(
+            "/Users/{}/FavoriteItems/{}",
+            crate::identity::encode_component(&user),
+            crate::identity::encode_component(item_id)
+        );
+        self.send(
+            if favorite {
+                Method::POST
+            } else {
+                Method::DELETE
+            },
+            "/Users/{userId}/FavoriteItems/{itemId}",
+            &path,
+            &[],
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Fetch one item for the signed-in user, including resume and stream metadata.
     pub async fn get_item(&self, item_id: &str) -> JellyfinResult<BaseItem> {
         let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
@@ -289,15 +353,34 @@ impl JellyfinClient {
         item_id: &str,
         profile_override: Option<DeviceProfile>,
     ) -> JellyfinResult<PlaybackInfoResponse> {
+        self.playback_info_with_policy(item_id, profile_override, None, true)
+            .await
+    }
+
+    /// Negotiate with an optional user-selected bitrate ceiling and transcoding policy.
+    pub async fn playback_info_with_policy(
+        &self,
+        item_id: &str,
+        profile_override: Option<DeviceProfile>,
+        max_bitrate: Option<u64>,
+        allow_transcoding: bool,
+    ) -> JellyfinResult<PlaybackInfoResponse> {
         if self.access_token().is_none() {
             return Err(Error::NotSignedIn);
         }
-        let profile = profile_override.unwrap_or_else(quest_device_profile);
+        let mut profile = profile_override.unwrap_or_else(quest_device_profile);
+        if let Some(bitrate) = max_bitrate {
+            profile.max_streaming_bitrate = bitrate;
+        }
         let user_id = self
             .session()
             .map(|session| session.user_id)
             .filter(|id| !id.is_empty());
-        let request = PlaybackInfoRequest::new(user_id, profile);
+        let mut request = PlaybackInfoRequest::new(user_id, profile);
+        if let Some(bitrate) = max_bitrate {
+            request.max_streaming_bitrate = Some(bitrate);
+        }
+        request.enable_transcoding = allow_transcoding;
         let body = serde_json::to_value(&request).map_err(|err| Error::Decode(err.to_string()))?;
         let url_path = format!(
             "/Items/{}/PlaybackInfo",
@@ -364,8 +447,8 @@ impl JellyfinClient {
             .http
             .get(format!("{}{path}", self.base_url))
             .header(AUTHORIZATION, self.authorization_value())
-            .header(ACCEPT, "image/*")
-            .query(&[("maxWidth", "400")])
+            .header(ACCEPT, "image/jpeg")
+            .query(&[("maxWidth", "400"), ("format", "Jpg")])
             .send()
             .await
             .map_err(|e| Error::Transport(e.to_string()))?;

@@ -14,6 +14,28 @@ fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("Missing {key}"))
 }
 
+fn item_json(item: &jellyfin_client::BaseItem) -> Value {
+    let user = item.user_data.as_ref();
+    let own_poster = item.image_tags.get("Primary");
+    let (image_id, image_tag) = if own_poster.is_some() {
+        (Some(item.id.as_str()), own_poster.map(String::as_str))
+    } else if item.series_primary_image_tag.is_some() {
+        (
+            item.series_id.as_deref(),
+            item.series_primary_image_tag.as_deref(),
+        )
+    } else {
+        (Some(item.id.as_str()), None)
+    };
+    json!({"id":item.id,"name":item.name,"type":item.item_type,
+        "format":item.video_3d_format.as_ref().map(ToString::to_string),
+        "overview":item.overview,"year":item.production_year,"rating":item.official_rating,
+        "runtime":item.run_time_ticks,"series":item.series_name,"season":item.parent_index_number,
+        "episode":item.index_number,"image_id":image_id,"image_tag":image_tag,
+        "resume":user.map_or(0, |u| u.playback_position_ticks.max(0)),
+        "favorite":user.is_some_and(|u| u.is_favorite),"played":user.is_some_and(|u| u.played)})
+}
+
 pub async fn run(v: Value) -> Result<Value, String> {
     let action = required(&v, "action")?;
     let store = Arc::new(AppSessionStore(required(&v, "store")?.into()));
@@ -27,7 +49,9 @@ pub async fn run(v: Value) -> Result<Value, String> {
     let client =
         JellyfinClient::new(required(&v, "server")?, identity, store).map_err(|e| e.to_string())?;
     match action {
-        "status" => Ok(json!({"signed_in": client.session().is_some()})),
+        "status" => Ok(
+            json!({"signed_in": client.session().is_some(), "user":client.session().map(|s| s.user_name)}),
+        ),
         "signout" => {
             client.clear_session().map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -47,23 +71,69 @@ pub async fn run(v: Value) -> Result<Value, String> {
             QuickConnectPoll::Pending { .. } => Ok(json!({"authorized":false})),
             QuickConnectPoll::Authorized(_) => Ok(json!({"authorized":true})),
         },
+        "libraries" => {
+            let page = client.library_views().await.map_err(|e| e.to_string())?;
+            Ok(json!({"items":page.items.iter().map(item_json).collect::<Vec<_>>()}))
+        }
+        "resume" => {
+            let page = client.resume_items().await.map_err(|e| e.to_string())?;
+            Ok(json!({"items":page.items.iter().map(item_json).collect::<Vec<_>>()}))
+        }
+        "details" => {
+            let item = client
+                .get_item(required(&v, "item")?)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(item_json(&item))
+        }
+        "favorite" => {
+            client
+                .set_favorite(
+                    required(&v, "item")?,
+                    v["favorite"].as_bool().ok_or("Missing favorite flag")?,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
         "browse" => {
             let page = client
                 .list_items(&ItemsQuery {
                     start_index: v["start"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
-                    limit: 50,
+                    limit: v["limit"].as_u64().unwrap_or(50).clamp(1, 50) as u32,
                     recursive: true,
+                    parent_id: v["parent"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    is_favorite: v["favorite"].as_bool(),
+                    sort_by: Some(
+                        match (v["kind"].as_str(), v["sort"].as_str()) {
+                            (Some("episodes"), _) => "ParentIndexNumber,IndexNumber,SortName",
+                            (_, Some("latest")) => "DateCreated",
+                            _ => "SortName",
+                        }
+                        .into(),
+                    ),
+                    descending: v["kind"].as_str() != Some("episodes")
+                        && v["sort"].as_str() == Some("latest"),
+                    extra_fields: vec!["Overview".into(), "PrimaryImageAspectRatio".into()],
                     search_term: v["search"]
                         .as_str()
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned),
-                    include_item_types: vec!["Movie".into(), "Episode".into(), "Video".into()],
+                    include_item_types: match v["kind"].as_str() {
+                        Some("movies") => vec!["Movie".into()],
+                        Some("shows") => vec!["Series".into()],
+                        Some("episodes") => vec!["Episode".into()],
+                        _ => vec!["Movie".into(), "Series".into(), "Video".into()],
+                    },
                     ..Default::default()
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-            let items: Vec<_> = page.items.iter().map(|item| json!({"id":item.id,"name":item.name,"type":item.item_type,"format":item.video_3d_format.as_ref().map(ToString::to_string)})).collect();
+            let items: Vec<_> = page.items.iter().map(item_json).collect();
             Ok(json!({"items":items,"next":page.next_start_index()}))
         }
         "image" => {
@@ -78,8 +148,12 @@ pub async fn run(v: Value) -> Result<Value, String> {
         "prepare" => {
             let id = required(&v, "item")?;
             let item = client.get_item(id).await.map_err(|e| e.to_string())?;
+            let max_bitrate = v["max_bitrate"]
+                .as_u64()
+                .map(|n| n.clamp(4_000_000, 120_000_000));
+            let allow_transcoding = v["allow_transcoding"].as_bool().unwrap_or(true);
             let info = client
-                .playback_info(id, None)
+                .playback_info_with_policy(id, None, max_bitrate, allow_transcoding)
                 .await
                 .map_err(|e| e.to_string())?;
             if let Some(err) = info.error_code {
@@ -87,6 +161,9 @@ pub async fn run(v: Value) -> Result<Value, String> {
             }
             let resolved = jellyfin_client::resolve_playback(client.base_url(), id, &info)
                 .map_err(|e| e.to_string())?;
+            if !allow_transcoding && resolved.method == jellyfin_client::PlayMethod::Transcode {
+                return Err("This source requires server transcoding. Enable it in Playback settings or choose another source.".into());
+            }
             let source = info
                 .media_sources
                 .iter()
@@ -122,7 +199,7 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .as_ref()
                 .map_or(0, |d| d.playback_position_ticks.max(0));
             Ok(
-                json!({"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
+                json!({"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
             )
         }
         "start" | "progress" | "stop" => {

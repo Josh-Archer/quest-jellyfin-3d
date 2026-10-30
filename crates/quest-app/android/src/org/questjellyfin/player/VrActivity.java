@@ -17,8 +17,9 @@ import java.util.concurrent.Executors;
 /** Displays the Android media player's output on the DeskQuest OpenXR surface. */
 public class VrActivity extends Activity {
     static { System.loadLibrary("quest_app"); }
-    private native String nativeRun(int width, int height, String format, String order, boolean passthrough, long epoch);
+    private native String nativeRun(int width, int height, String format, String order, boolean passthrough, float screenWidth, float screenDistance, long epoch);
     private native void nativeStop();
+    private native void nativeVideoState(long epoch, int state);
     private native long nativeArm();
     private native void nativeVideoSize(long epoch, int width, int height);
     private final ExecutorService xrThread = Executors.newSingleThreadExecutor();
@@ -48,11 +49,32 @@ public class VrActivity extends Activity {
         final int current = ++generation;
         final long epoch = nativeArm();
         xrEpoch = epoch;
+        ui.postDelayed(() -> {
+            if (resumed && generation == current && !started) fail("Video did not produce a frame. Try the Quest panel or another source.");
+        }, 30000);
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
-            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), epoch);
+            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
             ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) fail("Immersive playback could not start: " + error); else finish(); } });
         });
+    }
+    /** RGBA loading animation reused by DeskQuest's textured compositor overlays. */
+    public byte[] loadingPixels(int phase) {
+        android.graphics.Bitmap image = android.graphics.Bitmap.createBitmap(512, 256, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(image);
+        canvas.drawColor(android.graphics.Color.rgb(20, 22, 33));
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(android.graphics.Color.rgb(0, 164, 220)); paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+        paint.setTextSize(32); paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); canvas.drawText("Jellyfin", 256, 54, paint);
+        paint.setStyle(android.graphics.Paint.Style.STROKE); paint.setStrokeWidth(7);
+        canvas.drawArc(230, 78, 282, 130, phase * 45, 260, false, paint);
+        paint.setStyle(android.graphics.Paint.Style.FILL); paint.setColor(android.graphics.Color.WHITE); paint.setTextSize(24);
+        canvas.drawText("Loading video…", 256, 176, paint); paint.setTextSize(16);
+        canvas.drawText("Use system Back to cancel", 256, 215, paint);
+        int[] pixels = new int[512 * 256]; image.getPixels(pixels, 0, 512, 0, 0, 512, 256); image.recycle();
+        byte[] rgba = new byte[pixels.length * 4];
+        for (int i = 0; i < pixels.length; i++) { int p = pixels[i]; rgba[4*i] = (byte)(p >> 16); rgba[4*i+1] = (byte)(p >> 8); rgba[4*i+2] = (byte)p; rgba[4*i+3] = (byte)(p >> 24); }
+        return rgba;
     }
     private void fail(String message) {
         setResult(RESULT_CANCELED, new Intent().putExtra("error", message));
@@ -74,14 +96,19 @@ public class VrActivity extends Activity {
                 HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
                 player.setDataSource(this, Uri.parse(data.getString("url")), headers);
                 player.setOnInfoListener((mp, what, extra) -> {
+                    if (!resumed || player != mp) return false;
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
+                        nativeVideoState(xrEpoch, 1);
+                        android.util.Log.i("Jellyfin3D", "Decoder produced first video frame");
                         started = true; lastTicks = (long)mp.getCurrentPosition() * 10000;
                         report("start", false); scheduleProgress(generation);
                     }
+                    if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) nativeVideoState(xrEpoch, 2);
+                    else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END && started) nativeVideoState(xrEpoch, 1);
                     return false;
                 });
                 player.setOnPreparedListener(mp -> {
-                    if (!resumed) return;
+                    if (!resumed || player != mp) return;
                     int width = mp.getVideoWidth(), height = mp.getVideoHeight();
                     if (SurfacePreparation.needsResize(data.optInt("width"), data.optInt("height"), width, height)) {
                         // Rebind while the decoder is prepared but before it starts producing buffers.
@@ -89,7 +116,7 @@ public class VrActivity extends Activity {
                         nativeVideoSize(xrEpoch, width, height);
                     } else beginPlayback(mp);
                 });
-                player.setOnCompletionListener(mp -> { lastTicks = (long)mp.getDuration() * 10000; completed = true; finish(); });
+                player.setOnCompletionListener(mp -> { if (player == mp) { lastTicks = (long)mp.getDuration() * 10000; completed = true; finish(); } });
                 player.setOnErrorListener((mp, what, extra) -> { fail("The headset could not play this video (" + what + ", " + extra + "). Try the 2D preview or another source."); return true; });
                 player.prepareAsync();
             } catch (Exception e) { fail("Unable to open the video. Check the server connection and try again."); }
@@ -98,7 +125,7 @@ public class VrActivity extends Activity {
     private void beginPlayback(MediaPlayer mp) {
         long resumeMs = data.optLong("resume") / 10000L;
         Runnable begin = () -> {
-            if (!resumed || player != mp) return;
+            if (!resumed || isFinishing() || player != mp) return;
             mp.start();
             int current = generation;
             ui.postDelayed(() -> {
@@ -171,6 +198,7 @@ public class VrActivity extends Activity {
         try { latch.await(2, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
     private void releasePlayer() {
+        awaitingResizedSurface = false;
         if (player != null) {
             if (started && !completed) { try { lastTicks = (long)player.getCurrentPosition() * 10000; } catch (IllegalStateException ignored) {} }
             player.release(); player = null;

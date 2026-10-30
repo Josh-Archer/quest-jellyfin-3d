@@ -155,10 +155,6 @@ pub fn build_stereo_quad_layers<'a, G: Graphics>(
     texture_height: u32,
     config: &VirtualScreenConfig,
 ) -> Result<Vec<CompositionLayerQuad<'a, G>>> {
-    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
-    let aspect = calculate_display_aspect_ratio(format, texture_width, texture_height);
-    let height_m = config.compute_screen_height_m(aspect);
-
     let pose = Posef {
         orientation: Quaternionf::IDENTITY,
         position: Vector3f {
@@ -167,6 +163,34 @@ pub fn build_stereo_quad_layers<'a, G: Graphics>(
             z: -config.distance_m,
         },
     };
+
+    build_stereo_quad_layers_at_pose(
+        space,
+        swapchain,
+        format,
+        eye_order,
+        texture_width,
+        texture_height,
+        config,
+        pose,
+    )
+}
+
+/// Builds eye layers at an explicitly anchored cinema pose in the supplied reference space.
+#[allow(clippy::too_many_arguments)]
+pub fn build_stereo_quad_layers_at_pose<'a, G: Graphics>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<G>,
+    format: StereoFormat,
+    eye_order: EyeOrder,
+    texture_width: u32,
+    texture_height: u32,
+    config: &VirtualScreenConfig,
+    pose: Posef,
+) -> Result<Vec<CompositionLayerQuad<'a, G>>> {
+    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
+    let aspect = calculate_display_aspect_ratio(format, texture_width, texture_height);
+    let height_m = config.compute_screen_height_m(aspect);
 
     let size = Extent2Df {
         width: config.screen_width_m,

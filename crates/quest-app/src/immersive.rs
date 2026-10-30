@@ -1,18 +1,19 @@
 //! Android immersive activity using DeskQuest's OpenXR context and surface swapchain.
 use jni::{
-    objects::{JObject, JString, JValue},
-    sys::{jboolean, jlong, jstring},
+    objects::{JByteArray, JObject, JString, JValue},
+    sys::{jboolean, jfloat, jlong, jstring},
     JNIEnv,
 };
 use quest_jellyfin_player::{
-    build_stereo_quad_layers, EyeOrder, StereoFormat, VirtualScreenConfig,
+    build_stereo_quad_layers_at_pose, EyeOrder, StereoFormat, VirtualScreenConfig,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
 use xr_core::{OpenXrContext, XrConfig};
 use xr_video::graphics::vulkan::VulkanContext;
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
+static VIDEO_STATE: AtomicU8 = AtomicU8::new(0);
 static XR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static VIDEO_SIZE: std::sync::Mutex<Option<(u64, u32, u32)>> = std::sync::Mutex::new(None);
 
@@ -38,7 +39,20 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeArm(
     _: JNIEnv<'_>,
     _: JObject<'_>,
 ) -> jlong {
+    VIDEO_STATE.store(0, Ordering::Release);
     EPOCH.fetch_add(1, Ordering::AcqRel).wrapping_add(1) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeVideoState(
+    _: JNIEnv<'_>,
+    _: JObject<'_>,
+    epoch: jlong,
+    state: i32,
+) {
+    if EPOCH.load(Ordering::Acquire) == epoch as u64 {
+        VIDEO_STATE.store(state.clamp(0, 2) as u8, Ordering::Release);
+    }
 }
 
 #[no_mangle]
@@ -72,6 +86,8 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
     format: JString<'_>,
     order: JString<'_>,
     passthrough: jboolean,
+    screen_width: jfloat,
+    screen_distance: jfloat,
     epoch: jlong,
 ) -> jstring {
     let _guard = match XR_LOCK.lock() {
@@ -134,6 +150,16 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                     format,
                     order,
                     passthrough: passthrough != 0,
+                    screen_width: if screen_width.is_finite() {
+                        screen_width.clamp(1.5, 6.0)
+                    } else {
+                        4.0
+                    },
+                    screen_distance: if screen_distance.is_finite() {
+                        screen_distance.clamp(1.0, 5.0)
+                    } else {
+                        2.2
+                    },
                     epoch: epoch as u64,
                 },
             )
@@ -154,6 +180,8 @@ struct XrPlayback {
     format: StereoFormat,
     order: EyeOrder,
     passthrough: bool,
+    screen_width: f32,
+    screen_distance: f32,
     epoch: u64,
 }
 
@@ -168,6 +196,8 @@ fn run_xr(
         format,
         order,
         passthrough,
+        screen_width,
+        screen_distance,
         epoch,
     } = playback;
     let config = XrConfig {
@@ -184,10 +214,36 @@ fn run_xr(
     if passthrough && !xr.is_passthrough_enabled() {
         return Err("Passthrough is unavailable on this headset".into());
     }
+    let mut images = Vec::new();
+    for index in 0..8 {
+        let bytes = env
+            .call_method(activity, "loadingPixels", "(I)[B", &[JValue::Int(index)])
+            .map_err(|_| "Cannot create loading display")?
+            .l()
+            .map_err(|_| "Invalid loading display")?;
+        let rgba = env
+            .convert_byte_array(JByteArray::from(bytes))
+            .map_err(|_| "Invalid loading pixels")?;
+        if rgba.len() != 512 * 256 * 4 {
+            return Err("Invalid loading display dimensions".into());
+        }
+        images.push(xr_core::openxr::overlay::OverlayImage {
+            size: (512, 256),
+            rgba,
+        });
+    }
+    xr.set_billboard_images(images);
     let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
     let mut controls = crate::controls::PlaybackControls::default();
     let mut surface_started = false;
-    let screen = VirtualScreenConfig::default();
+    let screen = VirtualScreenConfig {
+        screen_width_m: screen_width,
+        distance_m: screen_distance,
+        ..Default::default()
+    };
+    let mut cinema_pose = None;
+    let mut recenter_down = false;
+    let animation_start = std::time::Instant::now();
     let render_result = (|| -> Result<(), String> {
         while EPOCH.load(Ordering::Acquire) == epoch && !xr.should_exit() {
             xr.poll_events().map_err(|e| e.to_string())?;
@@ -257,6 +313,19 @@ fn run_xr(
                 .max_by(|a, b| a.abs().total_cmp(&b.abs()))
                 .unwrap_or(0.0);
             let grip = [left, right].into_iter().flatten().any(|s| s.is_grabbing());
+            let recenter = [left, right]
+                .into_iter()
+                .flatten()
+                .any(|s| s.thumbstick.1 > 0.75);
+            if recenter && !recenter_down {
+                cinema_pose = None;
+            }
+            recenter_down = recenter;
+            if cinema_pose.is_none() {
+                cinema_pose = xr.head_pose_at(frame.predicted_display_time).map(|head| {
+                    quest_jellyfin_player::cinema::pose_in_front(head, screen.distance_m)
+                });
+            }
             if let Some(command) = controls.update(trigger, stick, grip) {
                 let code = match command {
                     crate::controls::Command::TogglePlayback => 0,
@@ -272,9 +341,34 @@ fn run_xr(
                     .map_err(|e| e.to_string())?;
                 continue;
             }
+            let Some(pose) = cinema_pose else {
+                xr.end_frame_empty(frame.predicted_display_time)
+                    .map_err(|e| e.to_string())?;
+                continue;
+            };
+            if VIDEO_STATE.load(Ordering::Acquire) != 1 {
+                let phase = (animation_start.elapsed().as_millis() / 100 % 8) as usize;
+                let overlay = xr_core::openxr::overlay::OverlayScene {
+                    billboard: Some(xr_core::openxr::overlay::BillboardVisual {
+                        pose,
+                        texture_index: phase,
+                        size: (1.5, 0.75),
+                    }),
+                    ..Default::default()
+                };
+                xr.render_and_present_layers(
+                    frame.predicted_display_time,
+                    &config,
+                    &vulkan,
+                    None,
+                    &overlay,
+                )
+                .map_err(|e| e.to_string())?;
+                continue;
+            }
             let space = xr.stage_space().ok_or("No OpenXR stage space")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
-            let layers = build_stereo_quad_layers(
+            let layers = build_stereo_quad_layers_at_pose(
                 space,
                 swapchain,
                 format,
@@ -282,6 +376,7 @@ fn run_xr(
                 size.width,
                 size.height,
                 &screen,
+                pose.into(),
             )
             .map_err(|e| e.to_string())?;
             let pt_layer = xr
