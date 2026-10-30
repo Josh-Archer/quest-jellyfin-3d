@@ -198,7 +198,7 @@ public class MainActivity extends Activity {
         if (cached != null) { image.setImageBitmap(cached); return image; }
         final String imageId = id;
         try {
-            String raw = envelope("image", value("item", imageId)).toString();
+            String raw = envelope("image", with(value("item", imageId), "fallback", item.optString("id"))).toString();
             images.execute(() -> {
                 if (generation != current) return;
                 Bitmap bitmap = null;

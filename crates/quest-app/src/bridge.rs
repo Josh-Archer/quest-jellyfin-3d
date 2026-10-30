@@ -17,16 +17,22 @@ fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
 fn item_json(item: &jellyfin_client::BaseItem) -> Value {
     let user = item.user_data.as_ref();
     let own_poster = item.image_tags.get("Primary");
-    let (image_id, image_tag) = if own_poster.is_some() {
-        (Some(item.id.as_str()), own_poster.map(String::as_str))
-    } else if item.series_primary_image_tag.is_some() {
-        (
-            item.series_id.as_deref(),
-            item.series_primary_image_tag.as_deref(),
-        )
-    } else {
-        (Some(item.id.as_str()), None)
-    };
+    let (image_id, image_tag) =
+        if item.item_type.as_deref() == Some("Episode") && item.series_id.is_some() {
+            (
+                item.series_id.as_deref(),
+                item.series_primary_image_tag.as_deref(),
+            )
+        } else if own_poster.is_some() {
+            (Some(item.id.as_str()), own_poster.map(String::as_str))
+        } else if item.series_primary_image_tag.is_some() {
+            (
+                item.series_id.as_deref(),
+                item.series_primary_image_tag.as_deref(),
+            )
+        } else {
+            (Some(item.id.as_str()), None)
+        };
     json!({"id":item.id,"name":item.name,"type":item.item_type,
         "format":item.video_3d_format.as_ref().map(ToString::to_string),
         "overview":item.overview,"year":item.production_year,"rating":item.official_rating,
@@ -149,10 +155,17 @@ pub async fn run(v: Value) -> Result<Value, String> {
             Ok(json!({"items":items,"next":page.next_start_index()}))
         }
         "image" => {
-            let image = client
-                .primary_image(required(&v, "item")?)
-                .await
-                .map_err(|e| e.to_string())?;
+            let id = required(&v, "item")?;
+            let mut image = client.primary_image(id).await.map_err(|e| e.to_string())?;
+            if image.is_none() {
+                if let Some(fallback) = v["fallback"].as_str().filter(|s| !s.is_empty() && *s != id)
+                {
+                    image = client
+                        .primary_image(fallback)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             Ok(
                 json!({"image": image.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))}),
             )

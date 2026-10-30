@@ -75,7 +75,7 @@ async fn home_libraries_resume_and_poster_fallback_preserve_user_data() {
         .await;
     Mock::given(method("GET")).and(path("/Users/viewer/Items/Resume"))
         .and(query_param("MediaTypes", "Video"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":"episode","Name":"Pilot","Type":"Episode","SeriesId":"show","SeriesName":"Series","SeriesPrimaryImageTag":"series-art","ParentIndexNumber":1,"IndexNumber":2,"RunTimeTicks":3000000000_i64,"UserData":{"PlaybackPositionTicks":500000000,"IsFavorite":true}}]}))).expect(1).mount(&f.server).await;
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":"episode","Name":"Pilot","Type":"Episode","SeriesId":"show","SeriesName":"Series","SeriesPrimaryImageTag":"series-art","ImageTags":{"Primary":"episode-still"},"ParentIndexNumber":1,"IndexNumber":2,"RunTimeTicks":3000000000_i64,"UserData":{"PlaybackPositionTicks":500000000,"IsFavorite":true}}]}))).expect(1).mount(&f.server).await;
     assert_eq!(f.call("status", json!({})).await["user"], "Viewer");
     assert_eq!(
         f.call("libraries", json!({})).await["items"][0]["id"],
@@ -148,7 +148,7 @@ async fn details_favorites_and_jpeg_artwork_use_native_jellyfin_routes() {
         .and(query_param("format", "Jpg"))
         .and(header("accept", "image/jpeg"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![255, 216, 255, 217]))
-        .expect(1)
+        .expect(2)
         .mount(&f.server)
         .await;
     for verb in ["POST", "DELETE"] {
@@ -172,6 +172,13 @@ async fn details_favorites_and_jpeg_artwork_use_native_jellyfin_routes() {
             .unwrap(),
         vec![255, 216, 255, 217]
     );
+    let fallback = f
+        .call(
+            "image",
+            json!({"item":"missing-series-art", "fallback":"movie"}),
+        )
+        .await;
+    assert_eq!(fallback["image"], image["image"]);
     f.call("favorite", json!({"item":"movie", "favorite":true}))
         .await;
     f.call("favorite", json!({"item":"movie", "favorite":false}))
