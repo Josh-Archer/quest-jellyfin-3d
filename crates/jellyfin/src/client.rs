@@ -347,6 +347,59 @@ impl JellyfinClient {
 
     /// `POST /Sessions/Playing/Stopped`.
     ///
+    /// Fetch a bounded primary poster using the authenticated Jellyfin image API.
+    /// Returns `None` when the item has no primary image.
+    ///
+    /// # Errors
+    /// Returns an error for unauthenticated, failed, or oversized responses.
+    pub async fn primary_image(&self, item_id: &str) -> JellyfinResult<Option<Vec<u8>>> {
+        if self.access_token().is_none() {
+            return Err(Error::NotSignedIn);
+        }
+        let path = format!(
+            "/Items/{}/Images/Primary",
+            crate::identity::encode_component(item_id)
+        );
+        let mut response = self
+            .http
+            .get(format!("{}{path}", self.base_url))
+            .header(AUTHORIZATION, self.authorization_value())
+            .header(ACCEPT, "image/*")
+            .query(&[("maxWidth", "400")])
+            .send()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(status_error(
+                "/Items/{id}/Images/Primary",
+                response.status(),
+                "",
+            ));
+        }
+        const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_IMAGE_BYTES as u64)
+        {
+            return Err(Error::Decode("Poster exceeds size limit".into()));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?
+        {
+            if chunk.len() > MAX_IMAGE_BYTES - bytes.len() {
+                return Err(Error::Decode("Poster exceeds size limit".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Some(bytes))
+    }
+
     /// # Errors
     ///
     /// Returns [`Error::NotSignedIn`] when no access token is loaded.

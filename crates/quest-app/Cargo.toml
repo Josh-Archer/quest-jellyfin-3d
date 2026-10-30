@@ -8,6 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64 = "0.22"
 jellyfin-client = { path = "../jellyfin" }
 quest-jellyfin-player = { path = "../quest-jellyfin-player" }
 serde.workspace = true

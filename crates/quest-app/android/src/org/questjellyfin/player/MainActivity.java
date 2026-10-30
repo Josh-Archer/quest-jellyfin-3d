@@ -7,6 +7,9 @@ import android.os.Looper;
 import android.content.SharedPreferences;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.util.Base64;
 import android.net.Uri;
 import java.util.HashMap;
 import android.view.View;
@@ -22,6 +25,7 @@ public class MainActivity extends Activity {
     static { System.loadLibrary("quest_app"); }
     static native String nativeRequest(String json);
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService images = Executors.newFixedThreadPool(3);
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private LinearLayout root;
@@ -36,6 +40,7 @@ public class MainActivity extends Activity {
     interface Done { void apply(JSONObject data) throws Exception; }
     private void request(String action, JSONObject extra, Done done) {
         final String targetServer = server;
+        final int requestGeneration = generation;
         try {
             JSONObject req = extra == null ? new JSONObject() : extra;
             req.put("action", action).put("server", targetServer).put("device", device)
@@ -45,7 +50,7 @@ public class MainActivity extends Activity {
                 try {
                     JSONObject reply = new JSONObject(nativeRequest(raw));
                     ui.post(() -> {
-                        if (isFinishing() || !targetServer.equals(server)) return;
+                        if (isFinishing() || !targetServer.equals(server) || requestGeneration != generation) return;
                         try {
                             if (!reply.optBoolean("ok")) { showStatus(reply.optString("error", "Request failed")); return; }
                             done.apply(reply.getJSONObject("data"));
@@ -101,28 +106,60 @@ public class MainActivity extends Activity {
             });
         }, 3000);
     }
+    private void loadPoster(String id, ImageView image, int current) {
+        try {
+            String raw = value("action", "image").put("item", id).put("server", server).put("device", device)
+                .put("store", getFilesDir().getAbsolutePath() + "/jellyfin-session.json").toString();
+            images.execute(() -> {
+                try {
+                    JSONObject reply = new JSONObject(nativeRequest(raw));
+                    if (!reply.optBoolean("ok")) return;
+                    JSONObject data = reply.getJSONObject("data");
+                    if (data.isNull("image")) return;
+                    byte[] bytes = Base64.decode(data.getString("image"), Base64.DEFAULT);
+                    Bitmap poster = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (poster != null) ui.post(() -> { if (!isFinishing() && generation == current) image.setImageBitmap(poster); });
+                } catch (Exception ignored) { /* A missing poster leaves the title usable. */ }
+            });
+        } catch (Exception ignored) {}
+    }
     private void browse(int start) {
-        generation++; page("Jellyfin library");
+        int current = ++generation; page("Jellyfin library");
         LinearLayout row = new LinearLayout(this);
         row.addView(button("Server", v -> home()));
         row.addView(button("Sign out", v -> request("signout", null, d -> home())));
+        EditText search = new EditText(this); search.setSingleLine(); search.setTextColor(Color.WHITE); search.setHintTextColor(Color.LTGRAY); search.setHint("Search your library"); search.setText(searchTerm);
+        row.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(button("Search", v -> { searchTerm = search.getText().toString().trim(); browse(0); }));
         root.addView(row);
-        EditText search = new EditText(this); search.setSingleLine(); search.setTextColor(Color.WHITE); search.setHintTextColor(Color.LTGRAY); search.setHint("Search your library"); search.setText(searchTerm); root.addView(search);
-        root.addView(button("Search", v -> { searchTerm = search.getText().toString().trim(); browse(0); }));
         ScrollView scroller = new ScrollView(this); LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); scroller.addView(list); root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
-        showStatus("Loading…");
+        showStatus("Loading library…");
         JSONObject query = value("start", start);
         try { query.put("search", searchTerm); } catch (Exception ignored) {}
         request("browse", query, data -> {
-            showStatus("Select a title for a 2D playback preview");
             JSONArray items = data.getJSONArray("items");
+            showStatus(items.length() == 0 ? "No titles found." : "Select a title to watch");
+            LinearLayout cards = null;
             for (int i = 0; i < items.length(); i++) {
+                if (i % 4 == 0) { cards = new LinearLayout(this); list.addView(cards); }
                 JSONObject item = items.getJSONObject(i); String id = item.getString("id");
-                String format = item.optString("format", ""); if ("null".equals(format)) format = "";
-                list.addView(button(item.optString("name", "Untitled") + (format.isEmpty() ? "" : " • " + format), v -> prepare(id)));
+                String name = item.optString("name", "Untitled");
+                LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(8, 8, 8, 8);
+                card.setContentDescription("Watch " + name); card.setOnClickListener(v -> prepare(id));
+                ImageView poster = new ImageView(this); poster.setBackgroundColor(Color.rgb(50, 48, 67)); poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                int height = (int)(230 * getResources().getDisplayMetrics().density);
+                card.addView(poster, new LinearLayout.LayoutParams(-1, height));
+                TextView caption = label(name); caption.setMaxLines(2); card.addView(caption);
+                cards.addView(card, new LinearLayout.LayoutParams(0, -2, 1));
+                loadPoster(id, poster, current);
             }
-            if (start > 0) list.addView(button("Previous", v -> browse(Math.max(0, start - 50))));
-            if (!data.isNull("next")) { int next = data.getInt("next"); list.addView(button("Next", v -> browse(next))); }
+            if (cards != null && items.length() % 4 != 0) {
+                for (int i = items.length() % 4; i < 4; i++) cards.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+            }
+            LinearLayout pages = new LinearLayout(this);
+            if (start > 0) pages.addView(button("Previous", v -> browse(Math.max(0, start - 50))));
+            if (!data.isNull("next")) { int next = data.getInt("next"); pages.addView(button("Next", v -> browse(next))); }
+            list.addView(pages);
         });
     }
     private void prepare(String item) {
@@ -144,11 +181,19 @@ public class MainActivity extends Activity {
             intent.addCategory("com.oculus.intent.category.VR");
             intent.addCategory("org.khronos.openxr.intent.category.IMMERSIVE_HMD");
             intent.putExtra("server", server).putExtra("device", device).putExtra("item", item).putExtra("playback", data.toString()).putExtra("passthrough", passthrough.isChecked());
-            startActivity(intent);
+            showStatus("Starting immersive playback…");
+            startActivityForResult(intent, 1);
         }));
         else root.addView(label("Immersive playback is unavailable for this format or missing video dimensions."));
         root.addView(button("2D preview", v -> { try { playback(item, data); } catch (Exception e) { showStatus("Could not start playback"); } }));
         root.addView(button("Back", v -> browse(0)));
+    }
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent result) {
+        super.onActivityResult(requestCode, resultCode, result);
+        if (requestCode == 1) {
+            String error = result == null ? null : result.getStringExtra("error");
+            showStatus(error == null ? "Playback closed. Select a playback option." : error);
+        }
     }
     private JSONObject playbackData(long ticks) {
         JSONObject o = value("item", activeItem);
@@ -189,5 +234,5 @@ public class MainActivity extends Activity {
         if (started) { request("stop", playbackData(lastPosition * 10000L), ignored -> {}); started = false; }
     }
     @Override protected void onStop() { super.onStop(); if (video != null) { stopPlayback(); home(); } }
-    @Override protected void onDestroy() { generation++; io.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() { generation++; io.shutdown(); images.shutdownNow(); super.onDestroy(); }
 }

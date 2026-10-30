@@ -1,4 +1,5 @@
 use crate::AppSessionStore;
+use base64::Engine;
 use jellyfin_client::{
     ClientIdentity, ItemsQuery, JellyfinClient, PlaybackProgressRequest, PlaybackStartRequest,
     PlaybackStopRequest, QuickConnectPoll,
@@ -64,6 +65,15 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
             let items: Vec<_> = page.items.iter().map(|item| json!({"id":item.id,"name":item.name,"type":item.item_type,"format":item.video_3d_format.as_ref().map(ToString::to_string)})).collect();
             Ok(json!({"items":items,"next":page.next_start_index()}))
+        }
+        "image" => {
+            let image = client
+                .primary_image(required(&v, "item")?)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({"image": image.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))}),
+            )
         }
         "prepare" => {
             let id = required(&v, "item")?;

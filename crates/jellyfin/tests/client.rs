@@ -570,3 +570,70 @@ fn server_url_rejects_embedded_credentials_queries_and_fragments() {
         assert!(!err.contains("secret"));
     }
 }
+
+#[tokio::test]
+async fn primary_poster_uses_authenticated_api_and_handles_missing_images() {
+    let server = MockServer::start().await;
+    let store = Arc::new(MemoryTokenStore::new());
+    store
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "test-token".into(),
+            user_id: "user-1".into(),
+            user_name: "user".into(),
+            server_id: "server".into(),
+            device_id: "device-1".into(),
+        })
+        .unwrap();
+    let client = JellyfinClient::new(&server.uri(), identity(), store).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Items/item-1/Images/Primary"))
+        .and(query_param("maxWidth", "400"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1, 2, 3]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Items/missing/Images/Primary"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert_eq!(
+        client.primary_image("item-1").await.unwrap(),
+        Some(vec![1, 2, 3])
+    );
+    assert_eq!(client.primary_image("missing").await.unwrap(), None);
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests
+        .iter()
+        .all(|request| header(request).contains("Token=\"test-token\"")));
+    let unsigned = JellyfinClient::with_memory_store(&server.uri(), identity()).unwrap();
+    assert!(matches!(
+        unsigned.primary_image("item-1").await,
+        Err(Error::NotSignedIn)
+    ));
+}
+
+#[tokio::test]
+async fn poster_rejects_oversized_response() {
+    let server = MockServer::start().await;
+    let store = Arc::new(MemoryTokenStore::new());
+    store
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "test-token".into(),
+            user_id: "user-1".into(),
+            user_name: "user".into(),
+            server_id: "server".into(),
+            device_id: "device-1".into(),
+        })
+        .unwrap();
+    let client = JellyfinClient::new(&server.uri(), identity(), store).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Items/large/Images/Primary"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0; 8 * 1024 * 1024 + 1]))
+        .mount(&server)
+        .await;
+    assert!(client.primary_image("large").await.is_err());
+}

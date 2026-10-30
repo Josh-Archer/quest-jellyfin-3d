@@ -42,7 +42,7 @@ pub struct VirtualScreenConfig {
     pub shape: VirtualScreenShape,
     /// Distance from headset origin in meters (defaults to 2.2m).
     pub distance_m: f32,
-    /// Screen physical width in meters (defaults to 2.6m).
+    /// Screen physical width in meters (defaults to 4.0m).
     pub screen_width_m: f32,
     /// Eye height elevation in meters (defaults to 1.4m in stage space).
     pub elevation_m: f32,
@@ -56,7 +56,7 @@ impl Default for VirtualScreenConfig {
             environment: VirtualScreenEnvironment::Passthrough,
             shape: VirtualScreenShape::CurvedCylinder,
             distance_m: 2.2,
-            screen_width_m: 2.6,
+            screen_width_m: 4.0,
             elevation_m: 1.4,
             cylinder_arc_rad: 1.2,
         }

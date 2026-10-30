@@ -12,6 +12,11 @@ jobs:
       - uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DESKQUEST_DEPLOY_KEY }}
+      - name: Trust GitHub SSH host key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
       - name: Fetch DeskQuest through its deploy key
         run: git config --global url."git@github.com:Josh-Archer/DeskQuest".insteadOf "https://github.com/Josh-Archer/DeskQuest"
       - run: echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"

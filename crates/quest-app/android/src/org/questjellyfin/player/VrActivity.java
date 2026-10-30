@@ -1,6 +1,7 @@
 package org.questjellyfin.player;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -30,6 +31,7 @@ public class VrActivity extends Activity {
     private Surface surface;
     private boolean started;
     private boolean completed;
+    private boolean awaitingResizedSurface;
     private long lastTicks;
     private int generation;
     private long xrEpoch;
@@ -49,8 +51,12 @@ public class VrActivity extends Activity {
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
             String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), epoch);
-            ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) Toast.makeText(this, error, Toast.LENGTH_LONG).show(); finish(); } });
+            ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) fail("Immersive playback could not start: " + error); else finish(); } });
         });
+    }
+    private void fail(String message) {
+        setResult(RESULT_CANCELED, new Intent().putExtra("error", message));
+        finish();
     }
     /** Called by the native OpenXR thread after the session and surface are ready. */
     public void onXrSurface(Surface nativeSurface) {
@@ -61,15 +67,10 @@ public class VrActivity extends Activity {
                 if (player != null) {
                     player.setSurface(surface);
                     android.util.Log.i("Jellyfin3D", "Video surface rebound");
+                    if (awaitingResizedSurface) { awaitingResizedSurface = false; beginPlayback(player); }
                     return;
                 }
                 player = new MediaPlayer(); player.setSurface(surface);
-                final long epoch = xrEpoch;
-                player.setOnVideoSizeChangedListener((mp, width, height) -> {
-                    if (resumed && player == mp && width > 0 && height > 0) {
-                        nativeVideoSize(epoch, width, height);
-                    }
-                });
                 HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
                 player.setDataSource(this, Uri.parse(data.getString("url")), headers);
                 player.setOnInfoListener((mp, what, extra) -> {
@@ -81,21 +82,34 @@ public class VrActivity extends Activity {
                 });
                 player.setOnPreparedListener(mp -> {
                     if (!resumed) return;
-                    long resumeMs = data.optLong("resume") / 10000L;
-                    Runnable begin = () -> {
-                        if (!resumed || player != mp) return;
-                        mp.start();
-                    };
-                    if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
-                        mp.setOnSeekCompleteListener(ignored -> { mp.setOnSeekCompleteListener(null); begin.run(); });
-                        mp.seekTo((int)resumeMs);
-                    } else begin.run();
+                    int width = mp.getVideoWidth(), height = mp.getVideoHeight();
+                    if (SurfacePreparation.needsResize(data.optInt("width"), data.optInt("height"), width, height)) {
+                        // Rebind while the decoder is prepared but before it starts producing buffers.
+                        awaitingResizedSurface = true;
+                        nativeVideoSize(xrEpoch, width, height);
+                    } else beginPlayback(mp);
                 });
                 player.setOnCompletionListener(mp -> { lastTicks = (long)mp.getDuration() * 10000; completed = true; finish(); });
-                player.setOnErrorListener((mp, what, extra) -> { Toast.makeText(this, "Unable to play this video on the headset", Toast.LENGTH_LONG).show(); finish(); return true; });
+                player.setOnErrorListener((mp, what, extra) -> { fail("The headset could not play this video (" + what + ", " + extra + "). Try the 2D preview or another source."); return true; });
                 player.prepareAsync();
-            } catch (Exception e) { Toast.makeText(this, "Unable to open video", Toast.LENGTH_LONG).show(); finish(); }
+            } catch (Exception e) { fail("Unable to open the video. Check the server connection and try again."); }
         });
+    }
+    private void beginPlayback(MediaPlayer mp) {
+        long resumeMs = data.optLong("resume") / 10000L;
+        Runnable begin = () -> {
+            if (!resumed || player != mp) return;
+            mp.start();
+            int current = generation;
+            ui.postDelayed(() -> {
+                if (resumed && current == generation && player == mp && !started)
+                    fail("Video did not produce a frame. Try the 2D preview or another source.");
+            }, 15000);
+        };
+        if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
+            mp.setOnSeekCompleteListener(ignored -> { mp.setOnSeekCompleteListener(null); begin.run(); });
+            mp.seekTo((int)resumeMs);
+        } else begin.run();
     }
     /** Detach the producer on the UI thread before OpenXR replaces its swapchain. */
     public boolean onXrDetachSurface() {
