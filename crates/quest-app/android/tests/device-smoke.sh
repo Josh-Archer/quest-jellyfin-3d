@@ -29,7 +29,7 @@ adb reverse "tcp:$PORT" "tcp:$PORT"
 python3 - "$ROOT/crates/quest-app/android/AndroidManifest.xml" "$OUT/AndroidManifest.xml" <<'PY'
 import sys
 from pathlib import Path
-source = Path(sys.argv[1]).read_text().replace('package="org.questjellyfin.player"', 'package="org.questjellyfin.player.smoke"').replace('android:label="Jellyfin 3D"', 'android:label="Jellyfin UI Test"')
+source = Path(sys.argv[1]).read_text().replace('package="org.questjellyfin.player"', 'package="org.questjellyfin.player.smoke"').replace('android:label="Jellyfin 3D"', 'android:label="Jellyfin UI Test"').replace('taskAffinity="org.questjellyfin.player.cinema"', 'taskAffinity="org.questjellyfin.player.smoke.cinema"')
 Path(sys.argv[2]).write_text(source)
 PY
 XR_DIR="$(cd "$ROOT" && cargo metadata --format-version 1 --locked | python3 -c 'import json,sys,os; print(os.path.dirname(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"]=="xr-core")))')"

@@ -12,6 +12,22 @@ use std::time::Duration;
 use xr_core::{OpenXrContext, XrConfig};
 use xr_video::graphics::vulkan::VulkanContext;
 
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(
+        priority: i32,
+        tag: *const std::ffi::c_char,
+        text: *const std::ffi::c_char,
+    ) -> i32;
+}
+fn diagnostic(message: &str) {
+    if let Ok(text) = std::ffi::CString::new(message) {
+        unsafe {
+            __android_log_write(4, c"Jellyfin3D".as_ptr(), text.as_ptr());
+        }
+    }
+}
+
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STATE: AtomicU8 = AtomicU8::new(0);
 static XR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -169,6 +185,13 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
         Ok(Err(e)) => e,
         Err(_) => "OpenXR initialization failed".into(),
     };
+    if !message.is_empty() {
+        diagnostic(&format!("XR failure: {message}"));
+    }
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
     env.new_string(message)
         .map(|v| v.into_raw())
         .unwrap_or(std::ptr::null_mut())
@@ -205,12 +228,15 @@ fn run_xr(
         stream_width: width,
         stream_height: height,
         enable_passthrough: passthrough,
+        enable_hud: true,
         ..Default::default()
     };
+    diagnostic("XR initializing");
     let mut vulkan = VulkanContext::new_simulated();
     let mut xr =
         unsafe { OpenXrContext::try_new_android(&config, &mut vulkan, activity.as_raw().cast()) }
             .map_err(|e| e.to_string())?;
+    diagnostic("XR context created");
     if passthrough && !xr.is_passthrough_enabled() {
         return Err("Passthrough is unavailable on this headset".into());
     }
@@ -227,12 +253,8 @@ fn run_xr(
         if rgba.len() != 512 * 256 * 4 {
             return Err("Invalid loading display dimensions".into());
         }
-        images.push(xr_core::openxr::overlay::OverlayImage {
-            size: (512, 256),
-            rgba,
-        });
+        images.push(rgba);
     }
-    xr.set_billboard_images(images);
     let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
     let mut controls = crate::controls::PlaybackControls::default();
     let mut surface_started = false;
@@ -244,15 +266,28 @@ fn run_xr(
     let mut cinema_pose = None;
     let mut recenter_down = false;
     let animation_start = std::time::Instant::now();
+    let mut last_diagnostic = std::time::Instant::now();
+    let mut previous_session_state = None;
+    let mut submitted_frames = 0_u64;
+    let mut reported_video_layer = false;
     let render_result = (|| -> Result<(), String> {
         while EPOCH.load(Ordering::Acquire) == epoch && !xr.should_exit() {
             xr.poll_events().map_err(|e| e.to_string())?;
+            let state = xr.session_state();
+            if previous_session_state != Some(state) {
+                diagnostic(&format!(
+                    "XR session {state:?}, running={}",
+                    xr.is_session_running()
+                ));
+                previous_session_state = Some(state);
+            }
             if !xr.is_session_running() {
                 std::thread::sleep(Duration::from_millis(30));
                 continue;
             }
             if !xr.swapchains_created() {
                 xr.create_swapchains(&config).map_err(|e| e.to_string())?;
+                diagnostic("XR swapchains created");
             }
             if surface_started {
                 let pending = VIDEO_SIZE.lock().ok().and_then(|mut value| value.take());
@@ -294,6 +329,7 @@ fn run_xr(
                 )
                 .map_err(|_| "Cannot start video")?;
                 surface_started = true;
+                diagnostic("XR video surface delivered");
             }
             let frame = xr.wait_frame().map_err(|e| e.to_string())?;
             xr.begin_frame().map_err(|e| e.to_string())?;
@@ -336,37 +372,41 @@ fn run_xr(
                 env.call_method(activity, "onXrCommand", "(I)V", &[JValue::Int(code)])
                     .map_err(|_| "Cannot send playback control")?;
             }
+            if last_diagnostic.elapsed() >= Duration::from_secs(2) {
+                diagnostic(&format!(
+                    "XR frame render={} tracked={} video={} submitted={submitted_frames}",
+                    frame.should_render,
+                    cinema_pose.is_some(),
+                    VIDEO_STATE.load(Ordering::Acquire)
+                ));
+                last_diagnostic = std::time::Instant::now();
+            }
             if !frame.should_render {
                 xr.end_frame_empty(frame.predicted_display_time)
                     .map_err(|e| e.to_string())?;
                 continue;
             }
-            let Some(pose) = cinema_pose else {
-                xr.end_frame_empty(frame.predicted_display_time)
-                    .map_err(|e| e.to_string())?;
-                continue;
-            };
+            // Loading must remain visible even before positional tracking is available.
             if VIDEO_STATE.load(Ordering::Acquire) != 1 {
                 let phase = (animation_start.elapsed().as_millis() / 100 % 8) as usize;
-                let overlay = xr_core::openxr::overlay::OverlayScene {
-                    billboard: Some(xr_core::openxr::overlay::BillboardVisual {
-                        pose,
-                        texture_index: phase,
-                        size: (1.5, 0.75),
-                    }),
-                    ..Default::default()
-                };
                 xr.render_and_present_layers(
                     frame.predicted_display_time,
                     &config,
                     &vulkan,
-                    None,
-                    &overlay,
+                    Some(&images[phase]),
+                    &xr_core::openxr::overlay::OverlayScene::default(),
                 )
                 .map_err(|e| e.to_string())?;
+                submitted_frames += 1;
                 continue;
             }
-            let space = xr.stage_space().ok_or("No OpenXR stage space")?;
+            let (reference, pose) =
+                quest_jellyfin_player::cinema::select_pose(cinema_pose, screen.distance_m);
+            let space = match reference {
+                quest_jellyfin_player::cinema::CinemaReference::Stage => xr.stage_space(),
+                quest_jellyfin_player::cinema::CinemaReference::View => xr.view_space(),
+            }
+            .ok_or("No OpenXR cinema reference space")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
             let layers = build_stereo_quad_layers_at_pose(
                 space,
@@ -391,6 +431,18 @@ fn run_xr(
             refs.extend(layers.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
                 .map_err(|e| e.to_string())?;
+            submitted_frames += 1;
+            if !reported_video_layer {
+                env.call_method(
+                    activity,
+                    "onXrVideoLayerSubmitted",
+                    "(J)V",
+                    &[JValue::Long(epoch as jlong)],
+                )
+                .map_err(|_| "Cannot confirm cinema presentation")?;
+                diagnostic("XR first video layer submitted");
+                reported_video_layer = true;
+            }
         }
         Ok(())
     })();

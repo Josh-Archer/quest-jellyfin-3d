@@ -1,5 +1,5 @@
 //! Place a cinema in front of the tracked viewer, then leave it anchored in the room.
-use xr_core::spatial::{ScreenPose, Vec3};
+use xr_core::spatial::{Quat, ScreenPose, Vec3};
 
 pub fn pose_in_front(head: ScreenPose, distance: f32) -> ScreenPose {
     let orientation = head.orientation.normalize();
@@ -7,10 +7,42 @@ pub fn pose_in_front(head: ScreenPose, distance: f32) -> ScreenPose {
     ScreenPose::new(head.position + forward * distance, orientation)
 }
 
+/// A view-relative screen remains usable when positional tracking is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CinemaReference {
+    Stage,
+    View,
+}
+
+pub fn select_pose(anchor: Option<ScreenPose>, distance: f32) -> (CinemaReference, ScreenPose) {
+    match anchor {
+        Some(pose) => (CinemaReference::Stage, pose),
+        None => (
+            CinemaReference::View,
+            ScreenPose::new(Vec3::new(0.0, 0.0, -distance), Quat::IDENTITY),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use xr_core::spatial::Quat;
+    #[test]
+    fn missing_tracking_still_produces_a_visible_view_relative_screen() {
+        let (reference, pose) = select_pose(None, 2.2);
+        assert_eq!(reference, CinemaReference::View);
+        assert_eq!(pose.position, Vec3::new(0.0, 0.0, -2.2));
+        assert_eq!(pose.orientation, Quat::IDENTITY);
+    }
+    #[test]
+    fn recovered_tracking_uses_the_existing_room_anchor() {
+        let anchor = pose_in_front(ScreenPose::IDENTITY, 3.0);
+        assert_eq!(
+            select_pose(Some(anchor), 2.2),
+            (CinemaReference::Stage, anchor)
+        );
+    }
     #[test]
     fn cinema_is_in_front_of_a_translated_and_turned_viewer() {
         let head = ScreenPose::new(

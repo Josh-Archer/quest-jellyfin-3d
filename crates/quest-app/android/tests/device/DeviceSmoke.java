@@ -1,5 +1,6 @@
 package org.questjellyfin.tests;
 
+import org.json.JSONObject;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Intent;
@@ -90,7 +91,28 @@ public class DeviceSmoke extends Instrumentation {
             click("Shows"); await("Sample Series");
             runOnMainSync(() -> { View view = find(activity.getWindow().getDecorView(), "Sample Series"); while (!view.isClickable()) view = (View)view.getParent(); view.performClick(); });
             await("S1 E1\nEpisode One"); screenshot("episodes");
-            result.putString("stream", "OK: artwork, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry\n"); finish(-1, result);
+            // Exercise the actual panel-to-cinema launch rather than starting VR directly.
+            ActivityMonitor vrMonitor = addMonitor("org.questjellyfin.player.VrActivity", null, false);
+            JSONObject videoData = new JSONObject().put("title", "XR smoke video").put("url", url + "/Videos/movie/stream")
+                .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("format", "Mono").put("eye_order", "LeftRight")
+                .put("width", 640).put("height", 360).put("method", "DirectPlay").put("source", "source").put("session", JSONObject.NULL);
+            runOnMainSync(() -> {
+                try {
+                    java.lang.reflect.Method launchCinema = activity.getClass().getDeclaredMethod("launchCinema", String.class, JSONObject.class);
+                    launchCinema.setAccessible(true); launchCinema.invoke(activity, "movie", videoData);
+                } catch (Exception e) { throw new RuntimeException(e); }
+            });
+            Activity vr = waitForMonitorWithTimeout(vrMonitor, 10000);
+            check(vr != null, "Cinema did not open");
+            check(vr.getTaskId() != activity.getTaskId(), "Cinema inherited the resizable panel task");
+            check(vr.getDisplay().getDisplayId() == android.view.Display.DEFAULT_DISPLAY, "Cinema inherited the panel display");
+            long frameDeadline = SystemClock.uptimeMillis() + 12000;
+            java.lang.reflect.Method submitted = vr.getClass().getMethod("hasSubmittedVideoLayer");
+            while (!((Boolean)submitted.invoke(vr)) && SystemClock.uptimeMillis() < frameDeadline) SystemClock.sleep(100);
+            check((Boolean)submitted.invoke(vr), "Decoder output never reached a submitted cinema layer");
+            SystemClock.sleep(2500);
+            runOnMainSync(vr::finish); await("Playback closed.");
+            result.putString("stream", "OK: artwork, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task and submitted video layer\n"); finish(-1, result);
         } catch (Throwable error) { result.putString("stream", "FAILED: " + error + "\n"); finish(0, result); }
     }
 }

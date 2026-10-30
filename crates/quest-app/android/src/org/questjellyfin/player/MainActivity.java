@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ResultReceiver;
 import android.content.SharedPreferences;
 import android.content.Intent;
 import android.graphics.Color;
@@ -362,14 +363,17 @@ public class MainActivity extends Activity {
             .putExtra("passthrough", prefs.getBoolean("passthrough", false))
             .putExtra("screen_width", QuestPreferences.screenWidth(prefs.getFloat("screen_width", QuestPreferences.DEFAULT_WIDTH)))
             .putExtra("screen_distance", QuestPreferences.screenDistance(prefs.getFloat("screen_distance", QuestPreferences.DEFAULT_DISTANCE)));
-        loading("Starting immersive cinema…"); startActivityForResult(intent, 1);
-    }
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent result) {
-        super.onActivityResult(requestCode, resultCode, result);
-        if (requestCode == 1) {
-            String error = result == null ? null : result.getStringExtra("error");
-            if (error == null) ready("Playback closed."); else error(error);
-        }
+        loading("Starting immersive cinema…");
+        int current = generation;
+        try {
+            CinemaLaunch.open(this, intent, new ResultReceiver(ui) {
+                @Override protected void onReceiveResult(int code, Bundle result) {
+                    if (isFinishing() || isDestroyed() || generation != current) return;
+                    String failure = result == null ? null : result.getString("error");
+                    if (failure == null) ready("Playback closed."); else error(failure);
+                }
+            });
+        } catch (RuntimeException e) { error("Could not open the cinema window. Try again from the library."); }
     }
     private JSONObject playbackData(long ticks) {
         return with(with(with(with(value("item", activeItem), "source", activeSource), "session", activeSession == null ? JSONObject.NULL : activeSession), "ticks", ticks), "method", activeMethod);

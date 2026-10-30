@@ -32,6 +32,9 @@ public class VrActivity extends Activity {
     private Surface surface;
     private boolean started;
     private boolean completed;
+    private String failure;
+    private boolean outcomeReported;
+    private volatile boolean videoLayerSubmitted;
     private boolean awaitingResizedSurface;
     private long lastTicks;
     private int generation;
@@ -39,24 +42,38 @@ public class VrActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        android.widget.FrameLayout window = new android.widget.FrameLayout(this);
+        window.setBackgroundColor(android.graphics.Color.BLACK); setContentView(window);
+        android.util.Log.i("Jellyfin3D", "VR created: display=" + getDisplay().getDisplayId() + " task=" + getTaskId());
+        loadPlaybackIntent();
+    }
+    private void loadPlaybackIntent() {
+        failure = null; outcomeReported = false; completed = false; videoLayerSubmitted = false;
         try {
             data = new JSONObject(getIntent().getStringExtra("playback"));
             server = getIntent().getStringExtra("server"); device = getIntent().getStringExtra("device"); item = getIntent().getStringExtra("item");
-        } catch (Exception e) { finish(); }
+        } catch (Exception e) { fail("Unable to read the selected playback source."); }
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); deliverOutcome(); setIntent(intent); loadPlaybackIntent();
     }
     @Override protected void onResume() {
-        super.onResume(); if (data == null) return; resumed = true;
+        super.onResume(); android.util.Log.i("Jellyfin3D", "VR resumed"); if (data == null) return; resumed = true;
         final int current = ++generation;
         final long epoch = nativeArm();
-        xrEpoch = epoch;
+        xrEpoch = epoch; videoLayerSubmitted = false;
         ui.postDelayed(() -> {
-            if (resumed && generation == current && !started) fail("Video did not produce a frame. Try the Quest panel or another source.");
+            if (resumed && generation == current && !videoLayerSubmitted) fail("Cinema could not present video on the headset. Try reopening Cinema or use the Quest panel.");
         }, 30000);
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
             String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
             ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) fail("Immersive playback could not start: " + error); else finish(); } });
         });
+    }
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        android.util.Log.i("Jellyfin3D", "VR window focus=" + focused);
     }
     /** RGBA loading animation reused by DeskQuest's textured compositor overlays. */
     public byte[] loadingPixels(int phase) {
@@ -77,7 +94,8 @@ public class VrActivity extends Activity {
         return rgba;
     }
     private void fail(String message) {
-        setResult(RESULT_CANCELED, new Intent().putExtra("error", message));
+        android.util.Log.e("Jellyfin3D", message);
+        failure = message;
         finish();
     }
     /** Called by the native OpenXR thread after the session and surface are ready. */
@@ -100,8 +118,7 @@ public class VrActivity extends Activity {
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
                         nativeVideoState(xrEpoch, 1);
                         android.util.Log.i("Jellyfin3D", "Decoder produced first video frame");
-                        started = true; lastTicks = (long)mp.getCurrentPosition() * 10000;
-                        report("start", false); scheduleProgress(generation);
+                        lastTicks = (long)mp.getCurrentPosition() * 10000;
                     }
                     if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) nativeVideoState(xrEpoch, 2);
                     else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END && started) nativeVideoState(xrEpoch, 1);
@@ -122,6 +139,16 @@ public class VrActivity extends Activity {
             } catch (Exception e) { fail("Unable to open the video. Check the server connection and try again."); }
         });
     }
+    /** A decoder callback alone is not proof that a compositor layer was submitted. */
+    public void onXrVideoLayerSubmitted(long epoch) {
+        ui.post(() -> {
+            if (!resumed || epoch != xrEpoch || player == null || videoLayerSubmitted) return;
+            videoLayerSubmitted = true; started = true;
+            lastTicks = (long)player.getCurrentPosition() * 10000;
+            report("start", false); scheduleProgress(generation);
+        });
+    }
+    public boolean hasSubmittedVideoLayer() { return videoLayerSubmitted; }
     private void beginPlayback(MediaPlayer mp) {
         long resumeMs = data.optLong("resume") / 10000L;
         Runnable begin = () -> {
@@ -129,8 +156,8 @@ public class VrActivity extends Activity {
             mp.start();
             int current = generation;
             ui.postDelayed(() -> {
-                if (resumed && current == generation && player == mp && !started)
-                    fail("Video did not produce a frame. Try the 2D preview or another source.");
+                if (resumed && current == generation && player == mp && !videoLayerSubmitted)
+                    fail("Cinema did not present a video frame. Try reopening Cinema or use the Quest panel.");
             }, 15000);
         };
         if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
@@ -222,10 +249,23 @@ public class VrActivity extends Activity {
         }, 10000);
     }
     @Override protected void onPause() {
+        android.util.Log.i("Jellyfin3D", "VR paused");
         resumed = false; generation++;
         releasePlayer();
         nativeStop();
         super.onPause();
     }
-    @Override protected void onDestroy() { xrThread.shutdown(); reports.shutdown(); super.onDestroy(); }
+    private void deliverOutcome() {
+        if (outcomeReported) return;
+        outcomeReported = true;
+        android.os.ResultReceiver receiver = getIntent().getParcelableExtra("cinema_result");
+        if (receiver != null) {
+            Bundle result = new Bundle(); if (failure != null) result.putString("error", failure);
+            receiver.send(failure == null ? RESULT_OK : RESULT_CANCELED, result);
+        }
+    }
+    @Override protected void onDestroy() {
+        if (!isChangingConfigurations()) deliverOutcome();
+        xrThread.shutdown(); reports.shutdown(); super.onDestroy();
+    }
 }
