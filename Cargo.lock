@@ -910,6 +910,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "quest-app"
+version = "0.1.0"
+dependencies = [
+ "jellyfin-client",
+ "jni",
+ "ndk-context",
+ "ndk-sys",
+ "openxr",
+ "quest-jellyfin-player",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+ "xr-core",
+ "xr-video",
+]
+
+[[package]]
 name = "quest-jellyfin-player"
 version = "0.1.0"
 dependencies = [

@@ -1,140 +1,42 @@
-# quest-jellyfin-3d
+# Jellyfin 3D for Quest
 
-Free immersive 3D Jellyfin player for Meta Quest 3+ (SBS/OU, 180/360, MV-HEVC) written in Rust, built on top of reusable XR crates from [DeskQuest](https://github.com/Josh-Archer/DeskQuest).
+A work-in-progress native Jellyfin client for Quest, using the Jellyfin HTTP API and the reusable `xr-core` and `xr-video` crates from [DeskQuest](https://github.com/Josh-Archer/DeskQuest). This project is independent of Jellyfin; it does not use a web player.
 
-Tracking roadmap: [DeskQuest #199](https://github.com/Josh-Archer/DeskQuest/issues/199).
+## Current capabilities
 
----
+The Android panel pairs with Jellyfin using Quick Connect, browses and searches movies and episodes, requests `PlaybackInfo`, and plays a server-approved source. Playback uses Android's media player to demux and decode into a DeskQuest OpenXR Android surface swapchain. The immersive activity submits separate flat quad layers for mono, half/full side-by-side and half/full over-under video. Jellyfin `Video3DFormat` and filename tags determine the packing and eye order. It resumes from Jellyfin's saved position and reports playback start, periodic progress, and stop. There is also a 2D playback preview.
 
-## Features (Milestones M1 & M2)
+The Quest app has been exercised with a mock Jellyfin server and a small H.264 test clip. This does not establish picture quality, stereo comfort, actual library compatibility, or reliable playback on a real server. The device profile is a negotiation proposal, not a verified guarantee that every advertised codec, resolution, container, audio track or bitrate will play. The app prefers direct play, then a server-provided remux or HLS transcode. Remux and transcode currently use the 2D preview because their output dimensions may differ from the source and invalidate stereo crops. The immersive view offers a dark background or passthrough. Trigger toggles playback, a horizontal thumbstick deflection seeks ten seconds, and grip cycles Android-detected audio tracks; use the system Back action to leave it. Controller actions and audio switching need physical-headset validation.
 
-### Milestone M1: Jellyfin Client & Direct Play
-- **QuickConnect Authentication**:
-  - `POST /QuickConnect/Initiate`: initiate pairing code.
-  - `GET /QuickConnect/Connect?secret=...`: poll authorization state.
-  - `POST /Users/AuthenticateWithQuickConnect`: exchange secret for user access token and session ID.
-- **Keycloak OpenID Connect (OIDC)**:
-  - Standard Keycloak authorization code flow with PKCE (`S256`).
-  - Extensible `OidcProvider` trait with `KeycloakOidcClient` and offline `MockOidcProvider`.
-  - Token exchange, user info claims, and token refresh.
-- **Library Browse**:
-  - `GET /Items?Fields=Video3DFormat,MediaStreams,Path`: browse movies/episodes with 3D metadata.
-  - Full stream parsing (codecs, resolutions, framerates, container).
-- **Meta Quest 3+ Device Profile**:
-  - Optimized for Snapdragon XR2 Gen 2 capabilities:
-    - HEVC / H.265 Direct Play up to **8192x4320@30fps (~8K30 HEVC cap)** or 4096x4096@60fps.
-    - AV1 Main Direct Play up to 8K30 / 4K60.
-    - AVC / H.264 Direct Play up to 4K60.
-    - Audio Direct Play: Opus, AAC, FLAC, AC-3, E-AC-3, Vorbis, PCM.
-    - Supported Containers: MKV, MP4, M4V, MOV, WebM, TS.
-    - Streaming bitrates up to 120 Mbps.
-- **Direct Play Stream URL**:
-  - Generates `/Videos/{id}/stream?static=true&api_key={token}` fed directly to the hardware decoder.
-- **Session Reporting**:
-  - `POST /Sessions/Playing`: report playback initiation.
-  - `POST /Sessions/Playing/Progress`: report playback position ticks and pause/unpause events.
-  - `POST /Sessions/Playing/Stopped`: report playback termination and flush decoder.
+360/180 and fisheye projection, MVC/MV-HEVC, on-screen immersive controls, subtitles and explicit audio track selection are not yet integrated. Unsupported projection and multiview formats are not offered in immersive mode. Keycloak/OIDC code is experimental and not connected to the app. Jellyfin image art is also not yet connected.
 
-### Milestone M2: Stereoscopic SBS / OU Virtual Screen
-- **Stereo Layouts**:
-  - **Half Side-by-Side (HSBS)**: Horizontally compressed frame with 2x aspect stretch compensation.
-  - **Full Side-by-Side (FSBS)**: Double-width frame with 1:1 pixel aspect ratio.
-  - **Half Over-Under (HOU / TAB)**: Vertically compressed frame with 2x aspect stretch compensation.
-  - **Full Over-Under (FOU / TAB)**: Double-height frame with 1:1 pixel aspect ratio.
-  - **Eye Ordering**: Left-Right (`_LR`) vs Right-Left (`_RL`), Top-Bottom (`_TB`) vs Bottom-Top (`_BT`).
-- **Format Detection Precedence**:
-  1. Jellyfin `Video3DFormat` (`HalfSideBySide`, `FullSideBySide`, `HalfTopAndBottom`, `FullTopAndBottom`, `Mvc`)
-  2. Filename tags (`3D`, `HSBS`, `FSBS`, `OU`, `TAB`, `180`, `360`, `fisheye`, `_LR`, `_TB`, `_RL`, `_BT`, `HALF-SBS`, `FULL-SBS`, `HOU`, `FOU`, etc.)
-  3. Container metadata (MKV `StereoMode` integer, stream `stereo_mode` tag)
-  4. Fallback: 2D Monoscopic
-- **Virtual Screen Presentation**:
-  - **Passthrough Mode**: Blends virtual screen with real-world camera feed (`XR_FB_passthrough`).
-  - **Dark Room Mode**: Theatrical black void / dark cinema room.
-  - **Display Shapes**: Flat Quad (`openxr::CompositionLayerQuad`) and Curved Cinema Cylinder (`openxr::CompositionLayerCylinderKHR`).
-  - Independent left and right eye OpenXR composition layer construction with exact sub-image pixel regions.
+Quick Connect tokens are kept in the application's private, backup-excluded storage and bound to the server URL and device identity. Video requests use an authorization header rather than placing the token in the URL. Prefer HTTPS when connecting outside a trusted network; HTTP is supported for local servers and sends credentials without transport encryption.
 
----
+## Layout
 
-## Workspace Architecture
+- `crates/quest-app`: Android panel, Rust API bridge, private session store, immersive activity, and APK build script.
+- `crates/jellyfin`: typed Jellyfin API client, device profile and session models.
+- `crates/quest-jellyfin-player`: format detection, per-eye geometry, and playback primitives.
+- `crates/jellyfin-player`: original XR crate scaffold.
+- `xr-core` and `xr-video`: pinned Git dependencies from DeskQuest, not copied into this repository. The Android build uses the packaging harness from the resolved `xr-core` revision.
 
-```
-quest-jellyfin-3d/
-├── .cargo/
-│   └── config.toml                  # CMake policy configuration
-├── .github/
-│   └── workflows/ci.yml             # GitHub Actions CI (fmt, clippy, test, Android check)
-├── Cargo.toml                       # Cargo workspace declaration
-├── crates/
-│   ├── jellyfin-player/             # App crate (from scaffold)
-│   ├── jellyfin/                    # `jellyfin-client` crate: pure Rust Jellyfin REST client (host-testable)
-│   │   ├── src/
-│   │   │   ├── client.rs            # JellyfinClient: QuickConnect, browse, PlaybackInfo, session reporting
-│   │   │   ├── device_profile.rs    # Quest 3 device profile & direct play evaluation
-│   │   │   ├── library.rs           # BaseItem, MediaStream, Video3DFormat
-│   │   │   ├── oidc.rs              # Keycloak OpenID Connect stub & client
-│   │   │   ├── playback.rs          # PlaybackInfo & direct play URL builder
-│   │   │   ├── sessions.rs          # Playing, Progress, Stopped request bodies
-│   │   │   └── store.rs             # TokenStore / MemoryTokenStore
-│   │   └── tests/                   # Fixtures & Wiremock integration tests
-│   └── quest-jellyfin-player/       # Stereo rendering & XR playback engine
-│       ├── src/
-│       │   ├── format.rs            # Item stereo detection (xr_video::format) + eye order
-│       │   ├── stereo.rs            # SBS/OU UV math & aspect ratio calculations
-│       │   ├── virtual_screen.rs    # Flat quad & cylinder OpenXR layer construction
-│       │   └── playback_engine.rs   # Hardware decoder pipeline & session coordination
-│       └── tests/                   # UV math & mock decoder integration tests
-└── README.md
+## Build and test
+
+Install Rust stable, the Android `aarch64-linux-android` target, `cargo-ndk`, JDK 17, Android SDK platform 34, build tools, and NDK 27.2.12479018. Set `ANDROID_SDK_ROOT` if the SDK is not at `~/Android/Sdk`.
+
+```sh
+cargo fmt --all -- --check
+cargo build --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+crates/quest-app/android/tests/run.sh
+crates/quest-app/android/build.sh
 ```
 
-### Dependencies on `xr-core` and `xr-video`
-These reusable XR foundation crates are consumed from DeskQuest#198 (pinned to `6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3`; bump `rev` in `Cargo.toml` to pick up changes):
-```toml
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
-```
-- `xr-core`: Reusable OpenXR session, passthrough, quad/cylinder composition layers, and spatial models.
-- `xr-video`: Zero-copy hardware video decoder abstraction (`HardwareVideoDecoder`, `MockHardwareDecoder`), stereo/projection detection (`xr_video::format`, DeskQuest#220), stereo layouts, and A/V synchronizer (`AvSynchronizer`).
+The debug APK is written to `crates/quest-app/target/android-apk/jellyfin-3d-debug.apk`. Add `--release` to build a release-mode APK using the harness's debug signing key. Connect a Quest with developer mode and ADB enabled and add `--install` to install it. Open the app, enter your Jellyfin server URL, and authorize its Quick Connect code from a signed-in Jellyfin client.
 
----
-
-## Building & Testing
-
-### Prerequisites
-- Rust stable (1.75+ / 2021 edition)
-- CMake 3.5+ (configured via `.cargo/config.toml` with `CMAKE_POLICY_VERSION_MINIMUM = "3.5"`)
-- OpenSSL / libasound2 development packages on Linux
-
-### Target Directory
-Set the shared target directory:
-```bash
-export CARGO_TARGET_DIR=/workspace/.cargo-target-deskquest
-```
-
-### Running Tests
-Execute all unit and integration test suites:
-```bash
-cargo test --workspace
-```
-
-### Linting & Formatting
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
----
+The automated tests include a mock API flow for pairing, library browsing, playback preparation and session reporting. They do not replace testing an authenticated Jellyfin server or inspecting the immersive view in a headset.
 
 ## Roadmap
 
-- [x] **M1**: Jellyfin client (QuickConnect, Keycloak OIDC stub, browse with 3D fields, Quest device profile, direct play URL, session reporting)
-- [x] **M2**: SBS/OU (half & full) stereo on virtual screen (passthrough or dark room, format detection precedence)
-- [ ] **M3**: 180° / 360° equirectangular and fisheye playback
-- [ ] **M4**: Subtitles with adjustable depth, audio track selection, resume & progress tracking
-- [ ] **M5**: MV-HEVC spatial video decoding
-- [ ] **M6**: Server-side Blu-ray MVC to full SBS HEVC conversion
-- [ ] **M7**: Tailscale remote playback & optimized transcode profiles
-
----
-
-## CI
-Runs on the ARC scale set `home-gh-runner-quest-jellyfin-3d` (Josh-Archer/home PR #3956). DeskQuest is public, so cargo fetches the pinned git deps over HTTPS with no deploy key.
+The [project roadmap](https://github.com/Josh-Archer/quest-jellyfin-3d/issues/2) tracks Jellyfin integration, stereoscopic playback, immersive projections, subtitles and audio, MV-HEVC, server conversion, and remote playback.

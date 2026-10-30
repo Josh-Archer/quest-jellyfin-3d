@@ -11,7 +11,7 @@ use crate::device_profile::{quest_device_profile, DeviceProfile};
 use crate::error::{scrub_secret, truncate_body, Error, JellyfinResult};
 use crate::identity::{authorization_header, ClientIdentity};
 use crate::json::parse;
-use crate::library::{ItemPage, ItemsQuery, ItemsResponse};
+use crate::library::{BaseItem, ItemPage, ItemsQuery, ItemsResponse};
 use crate::playback::{build_direct_play_url, PlaybackInfoRequest, PlaybackInfoResponse};
 use crate::quick_connect::{
     AuthenticationResult, QuickConnectChallenge, QuickConnectPoll, QuickConnectResult,
@@ -72,6 +72,7 @@ impl JellyfinClient {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(format!("{}/{}", identity.client(), identity.version()))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
@@ -135,6 +136,11 @@ impl JellyfinClient {
     /// Returns [`Error::Store`] when the store cannot be read.
     pub fn restore(&self) -> JellyfinResult<Option<StoredSession>> {
         let loaded = self.store.load().map_err(Error::Store)?;
+        // Never send a saved token to a different server or device identity.
+        let loaded = loaded.filter(|session| {
+            normalize_base_url(&session.server_url).ok().as_deref() == Some(&self.base_url)
+                && session.device_id == self.identity.device_id()
+        });
         *self.session.lock() = loaded.clone();
         Ok(loaded)
     }
@@ -245,6 +251,31 @@ impl JellyfinClient {
             .request(Method::GET, ITEMS_PATH, &pairs, None, None)
             .await?;
         Ok(response.into_page())
+    }
+
+    /// Fetch one item for the signed-in user, including resume and stream metadata.
+    pub async fn get_item(&self, item_id: &str) -> JellyfinResult<BaseItem> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        if user.is_empty() {
+            return Err(Error::MissingField("User.Id"));
+        }
+        let path = format!(
+            "/Users/{}/Items/{}",
+            crate::identity::encode_component(&user),
+            crate::identity::encode_component(item_id)
+        );
+        let value = self
+            .send(
+                Method::GET,
+                "/Users/{userId}/Items/{itemId}",
+                &path,
+                &[],
+                None,
+                None,
+            )
+            .await?
+            .ok_or(Error::Decode("empty item response".into()))?;
+        parse(value).map_err(|err| Error::Decode(err.to_string()))
     }
 
     /// `POST /Items/{id}/PlaybackInfo` with the Quest 3 device profile
@@ -448,17 +479,20 @@ fn status_error(path: &'static str, status: StatusCode, body: &str) -> Error {
 }
 
 fn normalize_base_url(url: &str) -> Result<String, Error> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let lower = trimmed.to_ascii_lowercase();
-    let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
-    let rest = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
-    if !scheme_ok || rest.is_empty() || rest.starts_with('/') {
-        return Err(Error::InvalidBaseUrl(url.trim().to_owned()));
+    let parsed =
+        url::Url::parse(url.trim()).map_err(|_| Error::InvalidBaseUrl("invalid URL".into()))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(Error::InvalidBaseUrl(
+            "expected an HTTP(S) server URL without credentials, query, or fragment".into(),
+        ));
     }
-    Ok(trimmed.to_owned())
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
 }
 
 #[cfg(test)]

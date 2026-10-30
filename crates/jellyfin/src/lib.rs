@@ -47,7 +47,7 @@ mod store;
 pub use client::JellyfinClient;
 pub use device_profile::{
     evaluate_direct_play, quest_device_profile, CodecProfile, DeviceProfile, DirectPlayDecision,
-    DirectPlayProfile, ProfileCondition,
+    DirectPlayProfile, ProfileCondition, TranscodingProfile,
 };
 pub use error::{Error, JellyfinResult};
 pub use identity::{authorization_header, ClientIdentity};
@@ -58,7 +58,10 @@ pub use library::{
 pub use oidc::{
     KeycloakOidcClient, MockOidcProvider, OidcConfig, OidcProvider, OidcTokenResponse, OidcUserInfo,
 };
-pub use playback::{build_direct_play_url, MediaSource, PlaybackInfoRequest, PlaybackInfoResponse};
+pub use playback::{
+    build_direct_play_url, resolve_playback, MediaSource, PlaybackInfoRequest,
+    PlaybackInfoResponse, ResolvedPlayback,
+};
 pub use quick_connect::{QuickConnectChallenge, QuickConnectPoll};
 pub use sessions::{
     PlayMethod, PlaybackProgressRequest, PlaybackStartRequest, PlaybackStopRequest,

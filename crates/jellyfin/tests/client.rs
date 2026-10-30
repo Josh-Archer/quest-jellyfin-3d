@@ -283,7 +283,7 @@ async fn items_request_pages_3d_fields_and_sends_the_stored_token() {
     let store = Arc::new(MemoryTokenStore::new());
     store
         .save(&StoredSession {
-            server_url: server.uri(),
+            server_url: base.clone(),
             access_token: "test-token".to_owned(),
             user_id: "user-1".to_owned(),
             user_name: "josh".to_owned(),
@@ -502,5 +502,71 @@ impl TokenStore for FailStore {
 
     fn clear(&self) -> Result<(), jellyfin_client::StoreError> {
         Ok(())
+    }
+}
+
+#[test]
+fn saved_token_is_bound_to_server_and_device() {
+    let store = Arc::new(MemoryTokenStore::new());
+    store
+        .save(&StoredSession {
+            server_url: "https://example.org/jellyfin".into(),
+            access_token: "private".into(),
+            user_id: "u".into(),
+            user_name: "n".into(),
+            server_id: "s".into(),
+            device_id: "device-1".into(),
+        })
+        .unwrap();
+    let other =
+        JellyfinClient::new("https://example.org/other", identity(), store.clone()).unwrap();
+    assert!(other.access_token().is_none());
+    let other_device = ClientIdentity::new("DeskQuest", "Quest 3", "device-2", "0.1.0").unwrap();
+    let other =
+        JellyfinClient::new("https://example.org/jellyfin", other_device, store.clone()).unwrap();
+    assert!(other.access_token().is_none());
+    let same = JellyfinClient::new("https://example.org/jellyfin/", identity(), store).unwrap();
+    assert_eq!(same.access_token().as_deref(), Some("private"));
+}
+
+#[tokio::test]
+async fn api_does_not_forward_credentials_on_redirect() {
+    let server = MockServer::start().await;
+    let destination = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/Items"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/stolen", destination.uri())),
+        )
+        .mount(&server)
+        .await;
+    let store = Arc::new(MemoryTokenStore::new());
+    store
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "s".into(),
+            device_id: "device-1".into(),
+        })
+        .unwrap();
+    let client = JellyfinClient::new(&server.uri(), identity(), store).unwrap();
+    assert!(client.list_items(&ItemsQuery::default()).await.is_err());
+    assert!(destination.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn server_url_rejects_embedded_credentials_queries_and_fragments() {
+    for address in [
+        "https://user:secret@example.com",
+        "https://example.com/?token=secret",
+        "https://example.com/#secret",
+    ] {
+        let err = JellyfinClient::with_memory_store(address, identity())
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("secret"));
     }
 }

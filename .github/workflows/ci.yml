@@ -1,7 +1,6 @@
 name: CI
 on:
   push:
-    branches: [main]
   pull_request:
 jobs:
   check:
@@ -15,6 +14,11 @@ jobs:
           components: rustfmt, clippy
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev || true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: crates/quest-app/android/tests/run.sh
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
