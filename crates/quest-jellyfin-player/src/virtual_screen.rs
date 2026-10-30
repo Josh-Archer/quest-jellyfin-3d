@@ -42,7 +42,7 @@ pub struct VirtualScreenConfig {
     pub shape: VirtualScreenShape,
     /// Distance from headset origin in meters (defaults to 2.2m).
     pub distance_m: f32,
-    /// Screen physical width in meters (defaults to 2.6m).
+    /// Screen physical width in meters (defaults to 4.0m).
     pub screen_width_m: f32,
     /// Eye height elevation in meters (defaults to 1.4m in stage space).
     pub elevation_m: f32,
@@ -56,7 +56,7 @@ impl Default for VirtualScreenConfig {
             environment: VirtualScreenEnvironment::Passthrough,
             shape: VirtualScreenShape::CurvedCylinder,
             distance_m: 2.2,
-            screen_width_m: 2.6,
+            screen_width_m: 4.0,
             elevation_m: 1.4,
             cylinder_arc_rad: 1.2,
         }
@@ -155,10 +155,6 @@ pub fn build_stereo_quad_layers<'a, G: Graphics>(
     texture_height: u32,
     config: &VirtualScreenConfig,
 ) -> Result<Vec<CompositionLayerQuad<'a, G>>> {
-    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
-    let aspect = calculate_display_aspect_ratio(format, texture_width, texture_height);
-    let height_m = config.compute_screen_height_m(aspect);
-
     let pose = Posef {
         orientation: Quaternionf::IDENTITY,
         position: Vector3f {
@@ -167,6 +163,34 @@ pub fn build_stereo_quad_layers<'a, G: Graphics>(
             z: -config.distance_m,
         },
     };
+
+    build_stereo_quad_layers_at_pose(
+        space,
+        swapchain,
+        format,
+        eye_order,
+        texture_width,
+        texture_height,
+        config,
+        pose,
+    )
+}
+
+/// Builds eye layers at an explicitly anchored cinema pose in the supplied reference space.
+#[allow(clippy::too_many_arguments)]
+pub fn build_stereo_quad_layers_at_pose<'a, G: Graphics>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<G>,
+    format: StereoFormat,
+    eye_order: EyeOrder,
+    texture_width: u32,
+    texture_height: u32,
+    config: &VirtualScreenConfig,
+    pose: Posef,
+) -> Result<Vec<CompositionLayerQuad<'a, G>>> {
+    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
+    let aspect = calculate_display_aspect_ratio(format, texture_width, texture_height);
+    let height_m = config.compute_screen_height_m(aspect);
 
     let size = Extent2Df {
         width: config.screen_width_m,

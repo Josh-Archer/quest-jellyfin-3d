@@ -242,6 +242,8 @@ pub struct BaseItem {
     /// Primary and backdrop image tags.
     #[serde(default, deserialize_with = "null_as_default")]
     pub image_tags: BTreeMap<String, String>,
+    /// Series poster tag when an episode inherits its artwork.
+    pub series_primary_image_tag: Option<String>,
     /// Per-user progress when the response includes it.
     pub user_data: Option<UserData>,
 }
@@ -314,6 +316,12 @@ pub struct ItemsQuery {
     pub include_item_types: Vec<String>,
     /// Free-text search. Sent as `SearchTerm` when non-empty.
     pub search_term: Option<String>,
+    /// Return only favorites when specified.
+    pub is_favorite: Option<bool>,
+    /// Server sort fields, for example SortName or DateCreated.
+    pub sort_by: Option<String>,
+    /// Sort in descending order.
+    pub descending: bool,
     /// Extra `Fields` names appended after [`ITEM_FIELDS`].
     pub extra_fields: Vec<String>,
 }
@@ -329,6 +337,9 @@ impl Default for ItemsQuery {
             include_item_types: Vec::new(),
             search_term: None,
             extra_fields: Vec::new(),
+            is_favorite: None,
+            sort_by: None,
+            descending: false,
         }
     }
 }
@@ -344,6 +355,24 @@ impl ItemsQuery {
                 if self.recursive { "true" } else { "false" }.to_owned(),
             ),
         ];
+        pairs.push(("EnableImages".into(), "true".into()));
+        pairs.push(("EnableUserData".into(), "true".into()));
+        pairs.push(("EnableImageTypes".into(), "Primary,Backdrop".into()));
+        if let Some(favorite) = self.is_favorite {
+            pairs.push(("IsFavorite".into(), favorite.to_string()));
+        }
+        if let Some(sort) = &self.sort_by {
+            pairs.push(("SortBy".into(), sort.clone()));
+            pairs.push((
+                "SortOrder".into(),
+                if self.descending {
+                    "Descending"
+                } else {
+                    "Ascending"
+                }
+                .into(),
+            ));
+        }
         if let Some(parent) = &self.parent_id {
             pairs.push(("ParentId".to_owned(), parent.clone()));
         }

@@ -4,6 +4,7 @@ members = [
     "crates/jellyfin",
     "crates/jellyfin-player",
     "crates/quest-jellyfin-player",
+    "crates/quest-app",
 ]
 
 [workspace.package]

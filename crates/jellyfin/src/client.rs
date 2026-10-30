@@ -11,7 +11,7 @@ use crate::device_profile::{quest_device_profile, DeviceProfile};
 use crate::error::{scrub_secret, truncate_body, Error, JellyfinResult};
 use crate::identity::{authorization_header, ClientIdentity};
 use crate::json::parse;
-use crate::library::{ItemPage, ItemsQuery, ItemsResponse};
+use crate::library::{BaseItem, ItemPage, ItemsQuery, ItemsResponse};
 use crate::playback::{build_direct_play_url, PlaybackInfoRequest, PlaybackInfoResponse};
 use crate::quick_connect::{
     AuthenticationResult, QuickConnectChallenge, QuickConnectPoll, QuickConnectResult,
@@ -72,6 +72,7 @@ impl JellyfinClient {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(format!("{}/{}", identity.client(), identity.version()))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
@@ -135,6 +136,11 @@ impl JellyfinClient {
     /// Returns [`Error::Store`] when the store cannot be read.
     pub fn restore(&self) -> JellyfinResult<Option<StoredSession>> {
         let loaded = self.store.load().map_err(Error::Store)?;
+        // Never send a saved token to a different server or device identity.
+        let loaded = loaded.filter(|session| {
+            normalize_base_url(&session.server_url).ok().as_deref() == Some(&self.base_url)
+                && session.device_id == self.identity.device_id()
+        });
         *self.session.lock() = loaded.clone();
         Ok(loaded)
     }
@@ -247,6 +253,95 @@ impl JellyfinClient {
         Ok(response.into_page())
     }
 
+    /// Library views available to the signed-in user, honoring server permissions.
+    pub async fn library_views(&self) -> JellyfinResult<ItemPage> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!("/Users/{}/Views", crate::identity::encode_component(&user));
+        let value = self
+            .send(Method::GET, "/Users/{userId}/Views", &path, &[], None, None)
+            .await?
+            .ok_or_else(|| Error::Decode("empty library response".into()))?;
+        let response: ItemsResponse = parse(value).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(response.into_page())
+    }
+
+    /// Resumable videos for Continue Watching.
+    pub async fn resume_items(&self) -> JellyfinResult<ItemPage> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!(
+            "/Users/{}/Items/Resume",
+            crate::identity::encode_component(&user)
+        );
+        let query = vec![
+            ("Limit".into(), "20".into()),
+            ("MediaTypes".into(), "Video".into()),
+            ("Fields".into(), "Overview,PrimaryImageAspectRatio".into()),
+            ("EnableUserData".into(), "true".into()),
+        ];
+        let value = self
+            .send(
+                Method::GET,
+                "/Users/{userId}/Items/Resume",
+                &path,
+                &query,
+                None,
+                None,
+            )
+            .await?
+            .ok_or_else(|| Error::Decode("empty resume response".into()))?;
+        let response: ItemsResponse = parse(value).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(response.into_page())
+    }
+
+    /// Set the signed-in user's favorite flag on a title.
+    pub async fn set_favorite(&self, item_id: &str, favorite: bool) -> JellyfinResult<()> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        let path = format!(
+            "/Users/{}/FavoriteItems/{}",
+            crate::identity::encode_component(&user),
+            crate::identity::encode_component(item_id)
+        );
+        self.send(
+            if favorite {
+                Method::POST
+            } else {
+                Method::DELETE
+            },
+            "/Users/{userId}/FavoriteItems/{itemId}",
+            &path,
+            &[],
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch one item for the signed-in user, including resume and stream metadata.
+    pub async fn get_item(&self, item_id: &str) -> JellyfinResult<BaseItem> {
+        let user = self.session().ok_or(Error::NotSignedIn)?.user_id;
+        if user.is_empty() {
+            return Err(Error::MissingField("User.Id"));
+        }
+        let path = format!(
+            "/Users/{}/Items/{}",
+            crate::identity::encode_component(&user),
+            crate::identity::encode_component(item_id)
+        );
+        let value = self
+            .send(
+                Method::GET,
+                "/Users/{userId}/Items/{itemId}",
+                &path,
+                &[],
+                None,
+                None,
+            )
+            .await?
+            .ok_or(Error::Decode("empty item response".into()))?;
+        parse(value).map_err(|err| Error::Decode(err.to_string()))
+    }
+
     /// `POST /Items/{id}/PlaybackInfo` with the Quest 3 device profile
     /// ([`crate::quest_device_profile`]) unless `profile_override` is given.
     ///
@@ -258,15 +353,34 @@ impl JellyfinClient {
         item_id: &str,
         profile_override: Option<DeviceProfile>,
     ) -> JellyfinResult<PlaybackInfoResponse> {
+        self.playback_info_with_policy(item_id, profile_override, None, true)
+            .await
+    }
+
+    /// Negotiate with an optional user-selected bitrate ceiling and transcoding policy.
+    pub async fn playback_info_with_policy(
+        &self,
+        item_id: &str,
+        profile_override: Option<DeviceProfile>,
+        max_bitrate: Option<u64>,
+        allow_transcoding: bool,
+    ) -> JellyfinResult<PlaybackInfoResponse> {
         if self.access_token().is_none() {
             return Err(Error::NotSignedIn);
         }
-        let profile = profile_override.unwrap_or_else(quest_device_profile);
+        let mut profile = profile_override.unwrap_or_else(quest_device_profile);
+        if let Some(bitrate) = max_bitrate {
+            profile.max_streaming_bitrate = bitrate;
+        }
         let user_id = self
             .session()
             .map(|session| session.user_id)
             .filter(|id| !id.is_empty());
-        let request = PlaybackInfoRequest::new(user_id, profile);
+        let mut request = PlaybackInfoRequest::new(user_id, profile);
+        if let Some(bitrate) = max_bitrate {
+            request.max_streaming_bitrate = Some(bitrate);
+        }
+        request.enable_transcoding = allow_transcoding;
         let body = serde_json::to_value(&request).map_err(|err| Error::Decode(err.to_string()))?;
         let url_path = format!(
             "/Items/{}/PlaybackInfo",
@@ -316,6 +430,59 @@ impl JellyfinClient {
 
     /// `POST /Sessions/Playing/Stopped`.
     ///
+    /// Fetch a bounded primary poster using the authenticated Jellyfin image API.
+    /// Returns `None` when the item has no primary image.
+    ///
+    /// # Errors
+    /// Returns an error for unauthenticated, failed, or oversized responses.
+    pub async fn primary_image(&self, item_id: &str) -> JellyfinResult<Option<Vec<u8>>> {
+        if self.access_token().is_none() {
+            return Err(Error::NotSignedIn);
+        }
+        let path = format!(
+            "/Items/{}/Images/Primary",
+            crate::identity::encode_component(item_id)
+        );
+        let mut response = self
+            .http
+            .get(format!("{}{path}", self.base_url))
+            .header(AUTHORIZATION, self.authorization_value())
+            .header(ACCEPT, "image/jpeg")
+            .query(&[("maxWidth", "400"), ("format", "Jpg")])
+            .send()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(status_error(
+                "/Items/{id}/Images/Primary",
+                response.status(),
+                "",
+            ));
+        }
+        const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_IMAGE_BYTES as u64)
+        {
+            return Err(Error::Decode("Poster exceeds size limit".into()));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?
+        {
+            if chunk.len() > MAX_IMAGE_BYTES - bytes.len() {
+                return Err(Error::Decode("Poster exceeds size limit".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Some(bytes))
+    }
+
     /// # Errors
     ///
     /// Returns [`Error::NotSignedIn`] when no access token is loaded.
@@ -448,17 +615,20 @@ fn status_error(path: &'static str, status: StatusCode, body: &str) -> Error {
 }
 
 fn normalize_base_url(url: &str) -> Result<String, Error> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let lower = trimmed.to_ascii_lowercase();
-    let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
-    let rest = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
-    if !scheme_ok || rest.is_empty() || rest.starts_with('/') {
-        return Err(Error::InvalidBaseUrl(url.trim().to_owned()));
+    let parsed =
+        url::Url::parse(url.trim()).map_err(|_| Error::InvalidBaseUrl("invalid URL".into()))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(Error::InvalidBaseUrl(
+            "expected an HTTP(S) server URL without credentials, query, or fragment".into(),
+        ));
     }
-    Ok(trimmed.to_owned())
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
 }
 
 #[cfg(test)]

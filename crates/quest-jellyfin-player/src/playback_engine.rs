@@ -6,6 +6,7 @@ use jellyfin_client::{
     BaseItem, JellyfinClient, MediaStreamType, PlayMethod, PlaybackProgressRequest,
     PlaybackStartRequest, PlaybackStopRequest,
 };
+use std::time::{Duration, Instant};
 use url::Url;
 use xr_video::audio::sync::AvSynchronizer;
 use xr_video::config::VideoCodec;
@@ -28,6 +29,8 @@ pub struct PlaybackEngine {
     state: PlaybackState,
     current_item: Option<BaseItem>,
     play_session_id: Option<String>,
+    media_source_id: Option<String>,
+    last_progress_report: Option<Instant>,
     direct_play_url: Option<Url>,
     detected_format: Option<DetectedStereoFormat>,
     position_ticks: u64,
@@ -43,6 +46,8 @@ impl PlaybackEngine {
             state: PlaybackState::Idle,
             current_item: None,
             play_session_id: None,
+            media_source_id: None,
+            last_progress_report: None,
             direct_play_url: None,
             detected_format: None,
             position_ticks: 0,
@@ -76,39 +81,84 @@ impl PlaybackEngine {
 
     /// Loads a media item, queries PlaybackInfo, detects 3D format, and configures the hardware decoder.
     pub async fn load_item(&mut self, item: BaseItem) -> Result<()> {
+        if matches!(self.state, PlaybackState::Playing | PlaybackState::Paused) {
+            return Err(PlayerError::Playback(
+                "Stop the current session before loading another item".into(),
+            ));
+        }
+        self.current_item = None;
+        self.play_session_id = None;
+        self.media_source_id = None;
+        self.direct_play_url = None;
+        self.detected_format = None;
+        self.last_progress_report = None;
+        self.position_ticks = 0;
+        self.state = PlaybackState::Idle;
         let detected = detect_item_format(&item);
         let playback_info = self.client.playback_info(&item.id, None).await?;
-        let stream_url = self.client.direct_play_url(&item.id)?;
+        if let Some(error) = &playback_info.error_code {
+            return Err(PlayerError::Playback(format!(
+                "Jellyfin rejected playback: {error}"
+            )));
+        }
+        let source = playback_info
+            .media_sources
+            .iter()
+            .find(|source| source.supports_direct_play)
+            .ok_or_else(|| {
+                PlayerError::Playback(
+                    "No direct-play media source; transcoding is not implemented".into(),
+                )
+            })?;
+        let mut stream_url = self.client.direct_play_url(&item.id)?;
+        stream_url
+            .query_pairs_mut()
+            .append_pair("MediaSourceId", &source.id);
 
         // Find primary video stream for decoder configuration
-        let video_stream = item
+        let video_stream = source
             .media_streams
             .iter()
-            .find(|s| s.stream_type == Some(MediaStreamType::Video));
+            .find(|s| s.stream_type == Some(MediaStreamType::Video))
+            .or_else(|| {
+                (playback_info.media_sources.len() == 1)
+                    .then_some(&item.media_streams)?
+                    .iter()
+                    .find(|s| s.stream_type == Some(MediaStreamType::Video))
+            });
 
         let width = video_stream
             .and_then(|s| s.width)
             .and_then(|w| u32::try_from(w).ok())
-            .unwrap_or(1920);
+            .filter(|w| *w > 0)
+            .ok_or_else(|| PlayerError::Playback("Missing video width".into()))?;
         let height = video_stream
             .and_then(|s| s.height)
             .and_then(|h| u32::try_from(h).ok())
-            .unwrap_or(1080);
+            .filter(|h| *h > 0)
+            .ok_or_else(|| PlayerError::Playback("Missing video height".into()))?;
         let codec = match video_stream
             .and_then(|s| s.codec.as_deref())
-            .unwrap_or("hevc")
+            .unwrap_or("")
             .to_lowercase()
             .as_str()
         {
             "av1" => VideoCodec::Av1,
-            _ => VideoCodec::Hevc,
+            "hevc" | "h265" | "h.265" => VideoCodec::Hevc,
+            codec => {
+                return Err(PlayerError::Playback(format!(
+                    "Unsupported or missing video codec: {codec}"
+                )))
+            }
         };
 
         // Initialize hardware decoder
         self.decoder.init(width, height, codec)?;
 
         self.current_item = Some(item);
+        self.media_source_id = Some(source.id.clone());
         self.play_session_id = playback_info.play_session_id;
+        self.last_progress_report = None;
         self.direct_play_url = Some(stream_url);
         self.detected_format = Some(detected);
         self.position_ticks = 0;
@@ -119,6 +169,11 @@ impl PlaybackEngine {
 
     /// Starts playback, reporting to Jellyfin `/Sessions/Playing`.
     pub async fn play(&mut self) -> Result<()> {
+        if self.state != PlaybackState::Idle {
+            return Err(PlayerError::Playback(
+                "Playback can only start after loading an item".into(),
+            ));
+        }
         let item = self
             .current_item
             .as_ref()
@@ -128,31 +183,39 @@ impl PlaybackEngine {
             item_id: item.id.clone(),
             play_session_id: self.play_session_id.clone(),
             play_method: PlayMethod::DirectPlay,
-            can_seek: true,
+            can_seek: false,
             is_paused: false,
             position_ticks: self.position_ticks,
-            media_source_id: None,
+            media_source_id: self.media_source_id.clone(),
             audio_stream_index: None,
             subtitle_stream_index: None,
         };
 
         self.client.report_playing(&req).await?;
         self.state = PlaybackState::Playing;
+        self.last_progress_report = Some(Instant::now());
         Ok(())
     }
 
-    /// Updates playback progress ticks and reports to Jellyfin `/Sessions/Playing/Progress`.
+    /// Updates playback position and reports periodic progress at most once every 10 seconds.
     pub async fn update_progress(&mut self, current_ticks: u64) -> Result<()> {
         self.position_ticks = current_ticks;
-        if self.state == PlaybackState::Playing {
+        if self.state == PlaybackState::Playing
+            && self
+                .last_progress_report
+                .is_none_or(|last| last.elapsed() >= Duration::from_secs(10))
+        {
             if let Some(item) = &self.current_item {
-                let req = PlaybackProgressRequest::time_update(
+                let mut req = PlaybackProgressRequest::time_update(
                     item.id.clone(),
                     self.play_session_id.clone(),
                     self.position_ticks,
                     false,
                 );
+                req.can_seek = false;
+                req.media_source_id = self.media_source_id.clone();
                 self.client.report_progress(&req).await?;
+                self.last_progress_report = Some(Instant::now());
             }
         }
         Ok(())
@@ -169,11 +232,11 @@ impl PlaybackEngine {
                 item_id: item.id.clone(),
                 play_session_id: self.play_session_id.clone(),
                 play_method: PlayMethod::DirectPlay,
-                can_seek: true,
+                can_seek: false,
                 is_paused: true,
                 position_ticks: self.position_ticks,
                 event_name: Some("Pause".to_string()),
-                media_source_id: None,
+                media_source_id: self.media_source_id.clone(),
             };
             self.client.report_progress(&req).await?;
         }
@@ -192,11 +255,11 @@ impl PlaybackEngine {
                 item_id: item.id.clone(),
                 play_session_id: self.play_session_id.clone(),
                 play_method: PlayMethod::DirectPlay,
-                can_seek: true,
+                can_seek: false,
                 is_paused: false,
                 position_ticks: self.position_ticks,
                 event_name: Some("Unpause".to_string()),
-                media_source_id: None,
+                media_source_id: self.media_source_id.clone(),
             };
             self.client.report_progress(&req).await?;
         }
@@ -206,12 +269,16 @@ impl PlaybackEngine {
 
     /// Stops playback, notifies Jellyfin `/Sessions/Playing/Stopped`, and flushes the decoder.
     pub async fn stop(&mut self) -> Result<()> {
+        if !matches!(self.state, PlaybackState::Playing | PlaybackState::Paused) {
+            return Ok(());
+        }
         if let Some(item) = &self.current_item {
-            let req = PlaybackStopRequest::new(
+            let mut req = PlaybackStopRequest::new(
                 item.id.clone(),
                 self.play_session_id.clone(),
                 self.position_ticks,
             );
+            req.media_source_id = self.media_source_id.clone();
             self.client.report_stopped(&req).await?;
         }
 

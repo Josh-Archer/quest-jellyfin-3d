@@ -72,6 +72,8 @@ pub struct MediaSource {
     pub supports_transcoding: bool,
     /// Direct stream URL provided by server if direct play is not possible.
     pub direct_stream_url: Option<String>,
+    /// Server-generated remux or transcoding URL.
+    pub transcoding_url: Option<String>,
     /// Total bitrate in bps.
     pub bitrate: Option<u64>,
     /// List of media streams.
@@ -90,6 +92,103 @@ pub struct PlaybackInfoResponse {
     pub play_session_id: Option<String>,
     /// Error code if playback is not allowed.
     pub error_code: Option<String>,
+}
+
+/// The server-selected stream and the method reported in Jellyfin sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPlayback {
+    pub url: Url,
+    pub source_id: String,
+    pub method: crate::PlayMethod,
+}
+
+/// Prefer direct play, then a server-provided direct-stream or transcoding URL.
+/// Refuse cross-origin URLs before a caller attaches authorization headers.
+pub fn resolve_playback(
+    base_url: &str,
+    item_id: &str,
+    info: &PlaybackInfoResponse,
+) -> crate::JellyfinResult<ResolvedPlayback> {
+    if let Some(source) = info.media_sources.iter().find(|s| s.supports_direct_play) {
+        let mut url = build_direct_play_url(base_url, item_id, None)?;
+        url.query_pairs_mut()
+            .append_pair("MediaSourceId", &source.id);
+        return Ok(ResolvedPlayback {
+            url,
+            source_id: source.id.clone(),
+            method: crate::PlayMethod::DirectPlay,
+        });
+    }
+    for method in [
+        crate::PlayMethod::DirectStream,
+        crate::PlayMethod::Transcode,
+    ] {
+        for source in &info.media_sources {
+            let raw = match method {
+                crate::PlayMethod::DirectStream if source.supports_direct_stream => {
+                    source.direct_stream_url.as_deref()
+                }
+                crate::PlayMethod::Transcode if source.supports_transcoding => {
+                    source.transcoding_url.as_deref()
+                }
+                _ => None,
+            };
+            if let Some(raw) = raw {
+                let url = resolve_server_url(base_url, raw)?;
+                return Ok(ResolvedPlayback {
+                    url,
+                    source_id: source.id.clone(),
+                    method,
+                });
+            }
+        }
+    }
+    Err(crate::Error::InvalidUrl(
+        "No supported playback source".into(),
+    ))
+}
+
+fn resolve_server_url(base_url: &str, raw: &str) -> crate::JellyfinResult<Url> {
+    let base =
+        Url::parse(base_url).map_err(|_| crate::Error::InvalidUrl("Invalid server URL".into()))?;
+    let mut prefix = base.clone();
+    prefix.set_path(&format!("{}/", base.path().trim_end_matches('/')));
+    let url = if raw.starts_with('/') && !raw.starts_with("//") {
+        let server_path = base.path().trim_end_matches('/');
+        if !server_path.is_empty() && !raw.starts_with(&format!("{server_path}/")) {
+            prefix.join(raw.trim_start_matches('/'))
+        } else {
+            base.join(raw)
+        }
+    } else {
+        prefix.join(raw)
+    }
+    .map_err(|_| crate::Error::InvalidUrl("Invalid stream URL".into()))?;
+    let base_path = base.path().trim_end_matches('/');
+    let in_server_path = base_path.is_empty()
+        || url.path() == base_path
+        || url.path().starts_with(&format!("{base_path}/"));
+    if url.origin() != base.origin()
+        || !in_server_path
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(crate::Error::InvalidUrl(
+            "Stream URL must remain on the Jellyfin server".into(),
+        ));
+    }
+    let mut url = url;
+    let params: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("api_key"))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    url.set_query(None);
+    if !params.is_empty() {
+        url.query_pairs_mut().extend_pairs(params);
+    }
+    Ok(url)
 }
 
 /// Direct play stream URL: `{base_url}/Videos/{id}/stream?static=true[&api_key=..]`.

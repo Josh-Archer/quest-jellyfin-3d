@@ -46,6 +46,19 @@ pub struct DirectPlayProfile {
     pub audio_codec: Option<String>,
 }
 
+/// A server-side streaming fallback supported by the Android media player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct TranscodingProfile {
+    pub container: String,
+    #[serde(rename = "Type")]
+    pub profile_type: String,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub protocol: String,
+    pub context: String,
+}
+
 /// Device playback profile sent to Jellyfin PlaybackInfo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -61,6 +74,9 @@ pub struct DeviceProfile {
     /// Direct play format specifications.
     #[serde(default)]
     pub direct_play_profiles: Vec<DirectPlayProfile>,
+    /// Streaming fallbacks the server can use when direct play is unavailable.
+    #[serde(default)]
+    pub transcoding_profiles: Vec<TranscodingProfile>,
     /// Fine-grained codec constraints (8K30 HEVC cap, AV1, AVC).
     #[serde(default)]
     pub codec_profiles: Vec<CodecProfile>,
@@ -95,6 +111,14 @@ pub fn quest_device_profile() -> DeviceProfile {
                 audio_codec: None,
             },
         ],
+        transcoding_profiles: vec![TranscodingProfile {
+            container: "ts".into(),
+            profile_type: "Video".into(),
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            protocol: "hls".into(),
+            context: "Streaming".into(),
+        }],
         codec_profiles: vec![
             CodecProfile {
                 profile_type: "Video".to_string(),

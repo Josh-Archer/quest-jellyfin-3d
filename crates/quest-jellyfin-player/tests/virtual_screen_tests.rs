@@ -10,7 +10,7 @@ fn test_virtual_screen_config_and_desktop_layer() {
     let mut config = VirtualScreenConfig::default();
     assert_eq!(config.environment, VirtualScreenEnvironment::Passthrough);
     assert_eq!(config.shape, VirtualScreenShape::CurvedCylinder);
-    assert_eq!(config.screen_width_m, 2.6);
+    assert_eq!(config.screen_width_m, 4.0);
     assert_eq!(config.distance_m, 2.2);
 
     // Switch to dark cinema room and flat quad
@@ -19,8 +19,8 @@ fn test_virtual_screen_config_and_desktop_layer() {
 
     let desktop_layer = config.to_desktop_layer_config(16.0 / 9.0);
     assert_eq!(desktop_layer.mode, xr_core::DisplayMode::FlatQuad);
-    assert_eq!(desktop_layer.quad_size.0, 2.6);
-    let expected_height = 2.6 / (16.0 / 9.0);
+    assert_eq!(desktop_layer.quad_size.0, 4.0);
+    let expected_height = 4.0 / (16.0 / 9.0);
     assert!((desktop_layer.quad_size.1 - expected_height).abs() < 1e-4);
     assert_eq!(desktop_layer.distance, 2.2);
 }

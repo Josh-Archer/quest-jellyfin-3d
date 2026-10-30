@@ -104,6 +104,12 @@ async fn test_playback_engine_full_lifecycle() {
         .as_str()
         .contains("static=true"));
 
+    assert!(engine
+        .direct_play_url()
+        .unwrap()
+        .query_pairs()
+        .any(|(k, v)| k == "MediaSourceId" && v == "source-1"));
+
     // Start playback
     engine.play().await.expect("Playback started");
     assert_eq!(engine.state(), PlaybackState::Playing);
@@ -148,7 +154,90 @@ async fn test_playback_engine_full_lifecycle() {
     engine.resume().await.expect("Resumed");
     assert_eq!(engine.state(), PlaybackState::Playing);
 
+    assert!(engine.play().await.is_err());
+
     // Stop playback
     engine.stop().await.expect("Stopped");
     assert_eq!(engine.state(), PlaybackState::Stopped);
+    engine.stop().await.unwrap();
+    let requests = mock_server.received_requests().await.unwrap();
+    let starts: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/Sessions/Playing")
+        .collect();
+    let stops: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/Sessions/Playing/Stopped")
+        .collect();
+    let progress: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/Sessions/Playing/Progress")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(stops.len(), 1);
+    assert_eq!(progress.len(), 2); // pause and unpause, periodic update was throttled
+    for request in starts.iter().chain(stops.iter()).chain(progress.iter()) {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["MediaSourceId"], "source-1");
+    }
+}
+
+#[tokio::test]
+async fn rejects_unplayable_sources_and_unsupported_codecs() {
+    for (response, codec, expected) in [
+        (
+            serde_json::json!({"ErrorCode": "NotAllowed", "MediaSources": []}),
+            "hevc",
+            "NotAllowed",
+        ),
+        (
+            serde_json::json!({"MediaSources": [{"Id": "s", "SupportsTranscoding": true}]}),
+            "hevc",
+            "No direct-play",
+        ),
+        (
+            serde_json::json!({"MediaSources": [{"Id": "s", "SupportsDirectPlay": true}]}),
+            "h264",
+            "Unsupported",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        store
+            .save(&StoredSession {
+                server_url: server.uri(),
+                access_token: "token".into(),
+                user_id: "user".into(),
+                user_name: "name".into(),
+                server_id: "server".into(),
+                device_id: "device".into(),
+            })
+            .unwrap();
+        let identity = ClientIdentity::new("app", "Quest", "device", "1").unwrap();
+        let client = JellyfinClient::new(&server.uri(), identity, store).unwrap();
+        Mock::given(method("POST"))
+            .and(path("/Items/item/PlaybackInfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&server)
+            .await;
+        let mut engine = PlaybackEngine::new(
+            client,
+            Box::new(MockHardwareDecoder::new(1920, 1080, VideoCodec::Hevc)),
+        );
+        let item = BaseItem {
+            id: "item".into(),
+            media_streams: vec![MediaStream {
+                codec: Some(codec.into()),
+                stream_type: Some(MediaStreamType::Video),
+                width: Some(1920),
+                height: Some(1080),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let error = engine.load_item(item).await.unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+        assert!(engine.direct_play_url().is_none());
+        assert!(engine.play().await.is_err());
+    }
 }

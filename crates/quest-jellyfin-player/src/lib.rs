@@ -22,5 +22,8 @@ pub use stereo::{
 };
 pub use virtual_screen::{
     build_stereo_cylinder_layers, build_stereo_eye_layer_specs, build_stereo_quad_layers,
-    EyeLayerSpec, VirtualScreenConfig, VirtualScreenEnvironment, VirtualScreenShape,
+    build_stereo_quad_layers_at_pose, EyeLayerSpec, VirtualScreenConfig, VirtualScreenEnvironment,
+    VirtualScreenShape,
 };
+
+pub mod cinema;

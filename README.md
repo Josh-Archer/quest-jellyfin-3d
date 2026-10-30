@@ -1,140 +1,52 @@
-# quest-jellyfin-3d
+# Jellyfin 3D for Quest
 
-Free immersive 3D Jellyfin player for Meta Quest 3+ (SBS/OU, 180/360, MV-HEVC) written in Rust, built on top of reusable XR crates from [DeskQuest](https://github.com/Josh-Archer/DeskQuest).
+A work-in-progress native Jellyfin client for Quest, using the Jellyfin HTTP API and the reusable `xr-core` and `xr-video` crates from [DeskQuest](https://github.com/Josh-Archer/DeskQuest). This project is independent of Jellyfin; it does not use a web player.
 
-Tracking roadmap: [DeskQuest #199](https://github.com/Josh-Archer/DeskQuest/issues/199).
+## Current capabilities
 
----
+The native Quest panel pairs with Jellyfin using Quick Connect and restores the saved account on launch. Home shows your libraries, Continue Watching, and Recently Added. Movies, shows, episodes, favorites and search use the authenticated Jellyfin API. Poster artwork is loaded from Jellyfin in a decoder-compatible format, cached in a bounded memory cache, and falls back to a labeled placeholder if unavailable. Title details show the overview, year, rating and duration, with resume, play-from-beginning and favorite actions. The interface uses a landscape Quest panel with large hand/controller targets, scrolling content, loading indicators, cancellation, empty states and retry actions.
 
-## Features (Milestones M1 & M2)
+Settings save the default player, streaming bitrate ceiling, server-transcoding permission, cinema width and distance, passthrough, resume behavior, poster density and sorting. The default bitrate negotiation remains 120 Mbps. Selecting a lower ceiling can trigger server conversion and change quality. Disabling transcoding requires a direct-play or remux source. Account settings provide server switching, sign-out and artwork-cache clearing.
 
-### Milestone M1: Jellyfin Client & Direct Play
-- **QuickConnect Authentication**:
-  - `POST /QuickConnect/Initiate`: initiate pairing code.
-  - `GET /QuickConnect/Connect?secret=...`: poll authorization state.
-  - `POST /Users/AuthenticateWithQuickConnect`: exchange secret for user access token and session ID.
-- **Keycloak OpenID Connect (OIDC)**:
-  - Standard Keycloak authorization code flow with PKCE (`S256`).
-  - Extensible `OidcProvider` trait with `KeycloakOidcClient` and offline `MockOidcProvider`.
-  - Token exchange, user info claims, and token refresh.
-- **Library Browse**:
-  - `GET /Items?Fields=Video3DFormat,MediaStreams,Path`: browse movies/episodes with 3D metadata.
-  - Full stream parsing (codecs, resolutions, framerates, container).
-- **Meta Quest 3+ Device Profile**:
-  - Optimized for Snapdragon XR2 Gen 2 capabilities:
-    - HEVC / H.265 Direct Play up to **8192x4320@30fps (~8K30 HEVC cap)** or 4096x4096@60fps.
-    - AV1 Main Direct Play up to 8K30 / 4K60.
-    - AVC / H.264 Direct Play up to 4K60.
-    - Audio Direct Play: Opus, AAC, FLAC, AC-3, E-AC-3, Vorbis, PCM.
-    - Supported Containers: MKV, MP4, M4V, MOV, WebM, TS.
-    - Streaming bitrates up to 120 Mbps.
-- **Direct Play Stream URL**:
-  - Generates `/Videos/{id}/stream?static=true&api_key={token}` fed directly to the hardware decoder.
-- **Session Reporting**:
-  - `POST /Sessions/Playing`: report playback initiation.
-  - `POST /Sessions/Playing/Progress`: report playback position ticks and pause/unpause events.
-  - `POST /Sessions/Playing/Stopped`: report playback termination and flush decoder.
+Playback uses Android's media player to demux and decode into a DeskQuest OpenXR Android surface swapchain. The cinema opens in a separate fullscreen task on the headset display. It anchors in the tracked viewing direction and recenters when a thumbstick is pushed upward. A view-relative fallback keeps video visible when positional tracking is unavailable. An animated loading panel uses DeskQuest's view-space RGBA HUD during startup and buffering, without depending on room tracking. Mono, half/full side-by-side and half/full over-under video use appropriate per-eye quad layers. Jellyfin metadata and filename tags determine packing and eye order. Trigger toggles playback, a horizontal thumbstick deflection seeks ten seconds, and grip cycles audio tracks. Use system Back to leave cinema. The Quest panel player also offers audio and supported embedded-subtitle selection.
 
-### Milestone M2: Stereoscopic SBS / OU Virtual Screen
-- **Stereo Layouts**:
-  - **Half Side-by-Side (HSBS)**: Horizontally compressed frame with 2x aspect stretch compensation.
-  - **Full Side-by-Side (FSBS)**: Double-width frame with 1:1 pixel aspect ratio.
-  - **Half Over-Under (HOU / TAB)**: Vertically compressed frame with 2x aspect stretch compensation.
-  - **Full Over-Under (FOU / TAB)**: Double-height frame with 1:1 pixel aspect ratio.
-  - **Eye Ordering**: Left-Right (`_LR`) vs Right-Left (`_RL`), Top-Bottom (`_TB`) vs Bottom-Top (`_BT`).
-- **Format Detection Precedence**:
-  1. Jellyfin `Video3DFormat` (`HalfSideBySide`, `FullSideBySide`, `HalfTopAndBottom`, `FullTopAndBottom`, `Mvc`)
-  2. Filename tags (`3D`, `HSBS`, `FSBS`, `OU`, `TAB`, `180`, `360`, `fisheye`, `_LR`, `_TB`, `_RL`, `_BT`, `HALF-SBS`, `FULL-SBS`, `HOU`, `FOU`, etc.)
-  3. Container metadata (MKV `StereoMode` integer, stream `stereo_mode` tag)
-  4. Fallback: 2D Monoscopic
-- **Virtual Screen Presentation**:
-  - **Passthrough Mode**: Blends virtual screen with real-world camera feed (`XR_FB_passthrough`).
-  - **Dark Room Mode**: Theatrical black void / dark cinema room.
-  - **Display Shapes**: Flat Quad (`openxr::CompositionLayerQuad`) and Curved Cinema Cylinder (`openxr::CompositionLayerCylinderKHR`).
-  - Independent left and right eye OpenXR composition layer construction with exact sub-image pixel regions.
+The app resumes from Jellyfin's saved position and reports playback start, periodic progress and stop. It prefers direct play, then a server-provided remux or HLS transcode. When decoded dimensions differ from source metadata, the OpenXR surface is rebound before the decoder starts. The app displays persistent startup errors and returns from an initial presentation timeout. Immersive playback is considered started only after the decoder produces video and OpenXR successfully submits a video layer. The device profile remains a negotiation proposal, not a guarantee for every advertised format or bitrate.
 
----
+A connected-Quest smoke suite verifies artwork reaching image views, home and library navigation, details, favorites, panel-video first-frame events, settings persistence and series navigation using an isolated test installation and mock server. It also verifies a distinct VR task on the headset display, successful video-layer submission, and return to the library panel. It captures screenshots for UI inspection and removes its test packages afterward. This does not establish real-library picture quality or immersive visibility. The user's real server has working panel playback; the earlier immersive view had audio with a black screen. A diagnostic run reproduced zero submitted layers while tracking was unavailable; the VR activity also shared a resizable panel task and remained in the VISIBLE session state. After separating the tasks and adding the view-space fallback, the connected-Quest test reached FOCUSED and submitted video layers. Visible picture quality and stereo still need physical-headset confirmation.
 
-## Workspace Architecture
+This is an independent native client with familiar Jellyfin browsing flows, not full feature parity with Jellyfin's official clients. Live TV, downloads, casting, playlists, 360/180 and fisheye projection, MVC/MV-HEVC, on-screen immersive transport controls and immersive subtitles remain unimplemented. Unsupported projection and multiview formats are not offered in cinema. Ordinary HEVC support does not imply multiview decoding. Keycloak/OIDC code is experimental and not connected to the app.
 
-```
-quest-jellyfin-3d/
-├── .cargo/
-│   └── config.toml                  # CMake policy configuration
-├── .github/
-│   └── workflows/ci.yml             # GitHub Actions CI (fmt, clippy, test, Android check)
-├── Cargo.toml                       # Cargo workspace declaration
-├── crates/
-│   ├── jellyfin-player/             # App crate (from scaffold)
-│   ├── jellyfin/                    # `jellyfin-client` crate: pure Rust Jellyfin REST client (host-testable)
-│   │   ├── src/
-│   │   │   ├── client.rs            # JellyfinClient: QuickConnect, browse, PlaybackInfo, session reporting
-│   │   │   ├── device_profile.rs    # Quest 3 device profile & direct play evaluation
-│   │   │   ├── library.rs           # BaseItem, MediaStream, Video3DFormat
-│   │   │   ├── oidc.rs              # Keycloak OpenID Connect stub & client
-│   │   │   ├── playback.rs          # PlaybackInfo & direct play URL builder
-│   │   │   ├── sessions.rs          # Playing, Progress, Stopped request bodies
-│   │   │   └── store.rs             # TokenStore / MemoryTokenStore
-│   │   └── tests/                   # Fixtures & Wiremock integration tests
-│   └── quest-jellyfin-player/       # Stereo rendering & XR playback engine
-│       ├── src/
-│       │   ├── format.rs            # Item stereo detection (xr_video::format) + eye order
-│       │   ├── stereo.rs            # SBS/OU UV math & aspect ratio calculations
-│       │   ├── virtual_screen.rs    # Flat quad & cylinder OpenXR layer construction
-│       │   └── playback_engine.rs   # Hardware decoder pipeline & session coordination
-│       └── tests/                   # UV math & mock decoder integration tests
-└── README.md
+Quick Connect tokens are kept in the application's private, backup-excluded storage and bound to the server URL and device identity. Video requests use an authorization header rather than placing the token in the URL. Prefer HTTPS when connecting outside a trusted network; HTTP is supported for local servers and sends credentials without transport encryption.
+
+## Layout
+
+- `crates/quest-app`: Android panel, Rust API bridge, private session store, immersive activity, and APK build script.
+- `crates/jellyfin`: typed Jellyfin API client, device profile and session models.
+- `crates/quest-jellyfin-player`: format detection, per-eye geometry, and playback primitives.
+- `crates/jellyfin-player`: original XR crate scaffold.
+- `xr-core` and `xr-video`: pinned Git dependencies from DeskQuest, not copied into this repository. The Android build uses the packaging harness from the resolved `xr-core` revision.
+
+## Build and test
+
+Install Rust stable, the Android `aarch64-linux-android` target, `cargo-ndk`, JDK 17, Android SDK platform 34, build tools, and NDK 27.2.12479018. Set `ANDROID_SDK_ROOT` if the SDK is not at `~/Android/Sdk`.
+
+```sh
+cargo fmt --all -- --check
+cargo build --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+crates/quest-app/android/tests/run.sh
+crates/quest-app/android/build.sh
+# Optional, with an awake developer-mode Quest attached; requires ffmpeg:
+crates/quest-app/android/tests/device-smoke.sh
 ```
 
-### Dependencies on `xr-core` and `xr-video`
-These reusable XR foundation crates are consumed from DeskQuest#198 (pinned to `6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3`; bump `rev` in `Cargo.toml` to pick up changes):
-```toml
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
-```
-- `xr-core`: Reusable OpenXR session, passthrough, quad/cylinder composition layers, and spatial models.
-- `xr-video`: Zero-copy hardware video decoder abstraction (`HardwareVideoDecoder`, `MockHardwareDecoder`), stereo/projection detection (`xr_video::format`, DeskQuest#220), stereo layouts, and A/V synchronizer (`AvSynchronizer`).
+The debug APK is written to `crates/quest-app/target/android-apk/jellyfin-3d-debug.apk`. Add `--release` to build a release-mode APK using the harness's debug signing key. Connect a Quest with developer mode and ADB enabled and add `--install` to install it. Open the app, enter your Jellyfin server URL, and authorize its Quick Connect code from a signed-in Jellyfin client.
 
----
-
-## Building & Testing
-
-### Prerequisites
-- Rust stable (1.75+ / 2021 edition)
-- CMake 3.5+ (configured via `.cargo/config.toml` with `CMAKE_POLICY_VERSION_MINIMUM = "3.5"`)
-- OpenSSL / libasound2 development packages on Linux
-
-### Target Directory
-Set the shared target directory:
-```bash
-export CARGO_TARGET_DIR=/workspace/.cargo-target-deskquest
-```
-
-### Running Tests
-Execute all unit and integration test suites:
-```bash
-cargo test --workspace
-```
-
-### Linting & Formatting
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
----
+The automated tests include a mock API flow for pairing, library browsing, playback preparation and session reporting. They do not replace testing an authenticated Jellyfin server or inspecting the immersive view in a headset.
 
 ## Roadmap
 
-- [x] **M1**: Jellyfin client (QuickConnect, Keycloak OIDC stub, browse with 3D fields, Quest device profile, direct play URL, session reporting)
-- [x] **M2**: SBS/OU (half & full) stereo on virtual screen (passthrough or dark room, format detection precedence)
-- [ ] **M3**: 180° / 360° equirectangular and fisheye playback
-- [ ] **M4**: Subtitles with adjustable depth, audio track selection, resume & progress tracking
-- [ ] **M5**: MV-HEVC spatial video decoding
-- [ ] **M6**: Server-side Blu-ray MVC to full SBS HEVC conversion
-- [ ] **M7**: Tailscale remote playback & optimized transcode profiles
+The [project roadmap](https://github.com/Josh-Archer/quest-jellyfin-3d/issues/2) tracks Jellyfin integration, stereoscopic playback, immersive projections, subtitles and audio, MV-HEVC, server conversion, and remote playback.
 
----
-
-## CI
-Runs on the ARC scale set `home-gh-runner-quest-jellyfin-3d` (Josh-Archer/home PR #3956). DeskQuest is public, so cargo fetches the pinned git deps over HTTPS with no deploy key.
+The shared DeskQuest repository is private. CI uses the read-only `DESKQUEST_DEPLOY_KEY` repository secret to fetch the pinned Cargo dependencies.
