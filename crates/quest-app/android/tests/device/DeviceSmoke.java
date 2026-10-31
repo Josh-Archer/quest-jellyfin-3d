@@ -58,13 +58,40 @@ public class DeviceSmoke extends Instrumentation {
     private boolean playing(Activity vr) {
         final boolean[] result = {false}; runOnMainSync(() -> { try { result[0] = (Boolean)vr.getClass().getMethod("isVideoPlaying").invoke(vr); } catch (Exception e) { throw new RuntimeException(e); } }); return result[0];
     }
+    private String startupState(Activity vr, boolean requestPlay) {
+        final String[] state = {""};
+        runOnMainSync(() -> { try {
+            java.lang.reflect.Field gateField = vr.getClass().getDeclaredField("playbackGate"); gateField.setAccessible(true);
+            Object gate = gateField.get(vr);
+            java.lang.reflect.Field focusedField = gate.getClass().getDeclaredField("focused"); focusedField.setAccessible(true);
+            java.lang.reflect.Field wantsField = gate.getClass().getDeclaredField("wantsPlay"); wantsField.setAccessible(true);
+            java.lang.reflect.Field readyField = vr.getClass().getDeclaredField("readyToPlay"); readyField.setAccessible(true);
+            boolean focused = focusedField.getBoolean(gate), wants = wantsField.getBoolean(gate), ready = readyField.getBoolean(vr);
+            // Simulate explicit Play only after an actual focus interruption. A prepared/buffering
+            // player can want playback before isPlaying becomes true; toggling then pauses it.
+            if (requestPlay && focused && ready && !wants) vr.getClass().getMethod("onXrCommand", int.class).invoke(vr, 0);
+            state[0] = "focused=" + focused + " wantsPlay=" + wants + " ready=" + ready + " windowFocus=" + vr.hasWindowFocus();
+        } catch (Exception e) { throw new RuntimeException(e); } });
+        return state[0];
+    }
     private void saveControls(Activity vr, String name) throws Exception {
-        byte[] rgba = (byte[])vr.getClass().getMethod("controlsPixels").invoke(vr);
-        check(rgba.length == 512*256*4, "Invalid controls atlas");
-        int[] pixels = new int[512*256];
-        for (int i=0;i<pixels.length;i++) pixels[i]=((rgba[4*i+3]&255)<<24)|((rgba[4*i]&255)<<16)|((rgba[4*i+1]&255)<<8)|(rgba[4*i+2]&255);
-        Bitmap bitmap = Bitmap.createBitmap(pixels,512,256,Bitmap.Config.ARGB_8888);
-        try (FileOutputStream out = new FileOutputStream(new File(activity.getExternalFilesDir(null), name+".png"))) { bitmap.compress(Bitmap.CompressFormat.PNG,100,out); } bitmap.recycle();
+        java.lang.reflect.Method art=vr.getClass().getMethod("controlsPixels",int.class,boolean.class,float.class);
+        byte[] normal=(byte[])art.invoke(vr,-1,false,1f), hidden=(byte[])art.invoke(vr,-1,false,0f);
+        check(normal.length==512*256*4 && hidden.length==normal.length,"Invalid controls atlas");
+        for(int i=0;i<512*192;i++) check(hidden[4*i+3]==0,"Hidden controls remained opaque");
+        for(int i=512*192*4;i<normal.length;i++) check(normal[i]==hidden[i],"Fading controls changed loft materials");
+        saveAtlas(normal,name);
+        saveAtlas((byte[])art.invoke(vr,5,true,1f),name+"-screen-tools");
+    }
+    private void saveAtlas(byte[] rgba,String name) throws Exception {
+        int[] pixels=new int[512*256];
+        for(int i=0;i<pixels.length;i++) {
+            int a=rgba[4*i+3]&255, r=0,g=0,b=0;
+            if(a>0) { r=Math.min(255,(rgba[4*i]&255)*255/a); g=Math.min(255,(rgba[4*i+1]&255)*255/a); b=Math.min(255,(rgba[4*i+2]&255)*255/a); }
+            pixels[i]=(a<<24)|(r<<16)|(g<<8)|b;
+        }
+        Bitmap bitmap=Bitmap.createBitmap(pixels,512,256,Bitmap.Config.ARGB_8888);
+        try(FileOutputStream out=new FileOutputStream(new File(activity.getExternalFilesDir(null),name+".png"))) { bitmap.compress(Bitmap.CompressFormat.PNG,100,out); } bitmap.recycle();
     }
     @Override public void onStart() {
         Bundle result = new Bundle();
@@ -124,15 +151,13 @@ public class DeviceSmoke extends Instrumentation {
                 java.lang.reflect.Method submitted = vr.getClass().getMethod("hasSubmittedVideoLayer");
                 java.lang.reflect.Method controls = vr.getClass().getMethod("hasSubmittedControls");
                 long frameDeadline = SystemClock.uptimeMillis() + 25000;
-                while (!((Boolean)submitted.invoke(vr)) && SystemClock.uptimeMillis() < frameDeadline) {
-                    // An OS window-focus loss can deliberately pause startup; explicit Play is required.
-                    if (!playing(vr)) command.invoke(vr, 0);
-                    SystemClock.sleep(500);
+                while ((!((Boolean)submitted.invoke(vr)) || !playing(vr)) && SystemClock.uptimeMillis() < frameDeadline) {
+                    startupState(vr, true);
+                    SystemClock.sleep(200);
                 }
                 check((Boolean)submitted.invoke(vr), "No submitted video layer: " + environment);
                 check((Boolean)controls.invoke(vr), "No submitted controls layer: " + environment);
-                if (!playing(vr)) { command.invoke(vr, 0); SystemClock.sleep(300); }
-                check(playing(vr), "Video did not start: " + environment);
+                check(playing(vr), "Video did not start: " + environment + " " + startupState(vr, false));
                 command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
                 command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
                 java.lang.reflect.Field epochField = vr.getClass().getDeclaredField("xrEpoch"); epochField.setAccessible(true);

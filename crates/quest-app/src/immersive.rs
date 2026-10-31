@@ -6,7 +6,7 @@ use jni::{
 };
 use quest_jellyfin_player::{
     build_stereo_cylinder_layers_at_pose, build_stereo_quad_layers_at_pose,
-    screen_controls::{panel_pose, Button, ScreenControls, PANEL_SIZE},
+    screen_controls::{artwork_height, panel_transform, Button, ScreenControls},
     EyeOrder, StereoFormat, VirtualScreenConfig,
 };
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -35,6 +35,7 @@ fn diagnostic(message: &str) {
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static VIDEO_STATE: AtomicU8 = AtomicU8::new(0);
+static PLAYING: AtomicU8 = AtomicU8::new(0);
 static XR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static VIDEO_SIZE: std::sync::Mutex<Option<(u64, u32, u32)>> = std::sync::Mutex::new(None);
 
@@ -61,7 +62,20 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeArm(
     _: JObject<'_>,
 ) -> jlong {
     VIDEO_STATE.store(0, Ordering::Release);
+    PLAYING.store(0, Ordering::Release);
     EPOCH.fetch_add(1, Ordering::AcqRel).wrapping_add(1) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativePlaybackStatus(
+    _: JNIEnv<'_>,
+    _: JObject<'_>,
+    epoch: jlong,
+    playing: jboolean,
+) {
+    if EPOCH.load(Ordering::Acquire) == epoch as u64 {
+        PLAYING.store(u8::from(playing != 0), Ordering::Release);
+    }
 }
 
 #[no_mangle]
@@ -283,6 +297,7 @@ fn run_xr(
     }
     let mut anchored = false;
     let mut atlas_ready = false;
+    let mut atlas_visual = (-1, false, -1);
     let mut atlas_refresh = std::time::Instant::now() - Duration::from_secs(1);
     let mut frame_clock = std::time::Instant::now();
     let mut had_video_frame = false;
@@ -474,7 +489,7 @@ fn run_xr(
                         }
                         None
                     }
-                    Button::Hide => None,
+                    Button::Hide | Button::Screen => None,
                 };
                 if let Some(code) = code {
                     env.call_method(activity, "onXrCommand", "(I)V", &[JValue::Int(code)])
@@ -503,6 +518,11 @@ fn run_xr(
                 )
                 .map_err(|_| "Cannot save screen preferences")?;
             }
+            controls.advance(PLAYING.load(Ordering::Acquire) != 0 && had_video_frame, dt);
+            if !had_video_frame {
+                controls.visible = true;
+                controls.opacity = 1.0;
+            }
             if last_diagnostic.elapsed() >= Duration::from_secs(2) {
                 diagnostic(&format!(
                     "XR frame render={} tracked={} video={} submitted={submitted_frames}",
@@ -519,9 +539,26 @@ fn run_xr(
             }
             // A regular HUD swapchain remains available while the surface decoder is loading,
             // paused, or buffering. Transport never depends on the decoder's first frame.
-            if atlas_refresh.elapsed() >= Duration::from_millis(250) || !atlas_ready {
+            let visual = (
+                controls.hovered.map(Button::artwork_id).unwrap_or(-1),
+                controls.tools_open,
+                (controls.opacity * 20.0).round() as i32,
+            );
+            if atlas_refresh.elapsed() >= Duration::from_millis(250)
+                || !atlas_ready
+                || visual != atlas_visual
+            {
                 let pixels = env
-                    .call_method(activity, "controlsPixels", "()[B", &[])
+                    .call_method(
+                        activity,
+                        "controlsPixels",
+                        "(IZF)[B",
+                        &[
+                            JValue::Int(visual.0),
+                            JValue::Bool(u8::from(visual.1)),
+                            JValue::Float(controls.opacity),
+                        ],
+                    )
                     .map_err(|_| "Cannot draw cinema controls")?
                     .l()
                     .map_err(|_| "Invalid cinema controls")?;
@@ -541,6 +578,7 @@ fn run_xr(
                     &rgba,
                 )?;
                 atlas_ready = true;
+                atlas_visual = visual;
                 atlas_refresh = std::time::Instant::now();
             }
             if VIDEO_STATE.load(Ordering::Acquire) == 1 {
@@ -600,19 +638,42 @@ fn run_xr(
                     crate::cinema_atlas::quad(space, hud, surface.rect, surface.pose, surface.size)
                 })
                 .collect();
-            if controls.visible || !had_video_frame {
-                let view = xr.view_space().ok_or("No control reference space")?;
-                overlays.push(crate::cinema_atlas::quad(
-                    view,
-                    hud,
-                    (0, 0, 512, 192),
-                    panel_pose(ScreenPose::new(Vec3::ZERO, Quat::IDENTITY)),
-                    PANEL_SIZE,
-                ));
+            let panel = panel_transform(&transform, controls.tools_open);
+            let mut control_cylinders = Vec::new();
+            if controls.opacity > 0.001 || !had_video_frame {
+                let rect = (0, 0, 512, artwork_height(controls.tools_open));
+                if panel.display_mode == xr_core::DisplayMode::FlatQuad {
+                    overlays.push(crate::cinema_atlas::quad(
+                        space,
+                        hud,
+                        rect,
+                        panel.pose(),
+                        panel.size_m(),
+                    ));
+                } else {
+                    control_cylinders.push(crate::cinema_atlas::cylinder(space, hud, rect, &panel));
+                }
             }
-            if had_video_frame {
-                // Persistent handles make manipulation discoverable before a hover.
+            if had_video_frame
+                && (controls.tools_open
+                    || controls.grab.is_grabbing()
+                    || controls.grab.hovered_corner().is_some()
+                    || controls.grab.hovering_handle())
+            {
+                // Screen tools reveal handles; otherwise show only the handle under the pointer.
                 for corner in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                    let hovered = controls.grab.hovered_corner().map(|c| match c {
+                        xr_core::spatial::Corner::TopLeft => (0.0, 0.0),
+                        xr_core::spatial::Corner::TopRight => (1.0, 0.0),
+                        xr_core::spatial::Corner::BottomLeft => (0.0, 1.0),
+                        xr_core::spatial::Corner::BottomRight => (1.0, 1.0),
+                    });
+                    if !controls.tools_open
+                        && !controls.grab.is_grabbing()
+                        && hovered != Some(corner)
+                    {
+                        continue;
+                    }
                     let chrome = xr_core::openxr::overlay::window_chrome(
                         &transform,
                         Some(corner),
@@ -645,23 +706,17 @@ fn run_xr(
                     ));
                 }
             }
-            if let Some(head) = head.filter(|_| focused) {
+            if head.is_some() && focused {
                 for input in &inputs {
                     if let Some(ray) = input.aim_ray {
-                        let panel = controls
+                        let panel_hit = controls
                             .visible
-                            .then(|| {
-                                xr_core::spatial::ray_intersects_quad(
-                                    &ray,
-                                    &panel_pose(head),
-                                    PANEL_SIZE,
-                                )
-                            })
+                            .then(|| panel.intersect_ray(&ray))
                             .flatten();
                         let screen_hit =
                             ScreenTransform::find_closest_window_hit(&ray, [(0, &transform)])
                                 .map(|(_, hit)| hit);
-                        if let Some(hit) = panel.or(screen_hit) {
+                        if let Some(hit) = panel_hit.or(screen_hit) {
                             let pointer = xr_core::openxr::overlay::PointerVisual {
                                 origin: ray.origin,
                                 direction: ray.direction,
@@ -691,6 +746,7 @@ fn run_xr(
             refs.extend(room_layers.iter().map(|layer| &**layer));
             refs.extend(quad_layers.iter().map(|layer| &**layer));
             refs.extend(cylinder_layers.iter().map(|layer| &**layer));
+            refs.extend(control_cylinders.iter().map(|layer| &**layer));
             refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
                 .map_err(|e| e.to_string())?;
