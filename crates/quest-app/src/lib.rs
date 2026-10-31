@@ -55,4 +55,6 @@ pub mod surface_size;
 mod android;
 
 #[cfg(target_os = "android")]
+mod cinema_atlas;
+#[cfg(target_os = "android")]
 mod immersive;

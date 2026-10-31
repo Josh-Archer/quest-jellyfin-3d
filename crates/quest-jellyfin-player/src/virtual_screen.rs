@@ -236,7 +236,6 @@ pub fn build_stereo_cylinder_layers<'a, G: Graphics>(
     texture_height: u32,
     config: &VirtualScreenConfig,
 ) -> Result<Vec<CompositionLayerCylinderKHR<'a, G>>> {
-    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
     let aspect = calculate_display_aspect_ratio(format, texture_width, texture_height);
 
     let pose = Posef {
@@ -247,6 +246,36 @@ pub fn build_stereo_cylinder_layers<'a, G: Graphics>(
             z: 0.0,
         },
     };
+
+    build_stereo_cylinder_layers_at_pose(
+        space,
+        swapchain,
+        format,
+        eye_order,
+        texture_width,
+        texture_height,
+        pose,
+        config.distance_m,
+        config.cylinder_arc_rad,
+        aspect,
+    )
+}
+
+/// Explicit cylinder axis pose, matching DeskQuest's curved-surface hit testing.
+#[allow(clippy::too_many_arguments)]
+pub fn build_stereo_cylinder_layers_at_pose<'a, G: Graphics>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<G>,
+    format: StereoFormat,
+    eye_order: EyeOrder,
+    texture_width: u32,
+    texture_height: u32,
+    pose: Posef,
+    radius: f32,
+    angle: f32,
+    aspect: f32,
+) -> Result<Vec<CompositionLayerCylinderKHR<'a, G>>> {
+    let specs = build_stereo_eye_layer_specs(format, eye_order, texture_width, texture_height)?;
 
     let layers = specs
         .into_iter()
@@ -270,8 +299,8 @@ pub fn build_stereo_cylinder_layers<'a, G: Graphics>(
                 .eye_visibility(spec.eye_visibility)
                 .sub_image(sub_image)
                 .pose(pose)
-                .radius(config.distance_m)
-                .central_angle(config.cylinder_arc_rad)
+                .radius(radius)
+                .central_angle(angle)
                 .aspect_ratio(aspect)
         })
         .collect();

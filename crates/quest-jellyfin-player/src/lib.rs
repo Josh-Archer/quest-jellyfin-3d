@@ -21,9 +21,11 @@ pub use stereo::{
     NormalizedUvRect, StereoPixelRect,
 };
 pub use virtual_screen::{
-    build_stereo_cylinder_layers, build_stereo_eye_layer_specs, build_stereo_quad_layers,
-    build_stereo_quad_layers_at_pose, EyeLayerSpec, VirtualScreenConfig, VirtualScreenEnvironment,
-    VirtualScreenShape,
+    build_stereo_cylinder_layers, build_stereo_cylinder_layers_at_pose,
+    build_stereo_eye_layer_specs, build_stereo_quad_layers, build_stereo_quad_layers_at_pose,
+    EyeLayerSpec, VirtualScreenConfig, VirtualScreenEnvironment, VirtualScreenShape,
 };
 
 pub mod cinema;
+pub mod environment;
+pub mod screen_controls;
