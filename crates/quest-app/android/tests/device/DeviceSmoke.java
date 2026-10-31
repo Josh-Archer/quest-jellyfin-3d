@@ -55,6 +55,17 @@ public class DeviceSmoke extends Instrumentation {
             } catch (Exception e) { throw new RuntimeException(e); }
         });
     }
+    private boolean playing(Activity vr) {
+        final boolean[] result = {false}; runOnMainSync(() -> { try { result[0] = (Boolean)vr.getClass().getMethod("isVideoPlaying").invoke(vr); } catch (Exception e) { throw new RuntimeException(e); } }); return result[0];
+    }
+    private void saveControls(Activity vr, String name) throws Exception {
+        byte[] rgba = (byte[])vr.getClass().getMethod("controlsPixels").invoke(vr);
+        check(rgba.length == 512*256*4, "Invalid controls atlas");
+        int[] pixels = new int[512*256];
+        for (int i=0;i<pixels.length;i++) pixels[i]=((rgba[4*i+3]&255)<<24)|((rgba[4*i]&255)<<16)|((rgba[4*i+1]&255)<<8)|(rgba[4*i+2]&255);
+        Bitmap bitmap = Bitmap.createBitmap(pixels,512,256,Bitmap.Config.ARGB_8888);
+        try (FileOutputStream out = new FileOutputStream(new File(activity.getExternalFilesDir(null), name+".png"))) { bitmap.compress(Bitmap.CompressFormat.PNG,100,out); } bitmap.recycle();
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
@@ -91,28 +102,58 @@ public class DeviceSmoke extends Instrumentation {
             click("Shows"); await("Sample Series");
             runOnMainSync(() -> { View view = find(activity.getWindow().getDecorView(), "Sample Series"); while (!view.isClickable()) view = (View)view.getParent(); view.performClick(); });
             await("S1 E1\nEpisode One"); screenshot("episodes");
-            // Exercise the actual panel-to-cinema launch rather than starting VR directly.
-            ActivityMonitor vrMonitor = addMonitor("org.questjellyfin.player.VrActivity", null, false);
-            JSONObject videoData = new JSONObject().put("title", "XR smoke video").put("url", url + "/Videos/movie/stream")
-                .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("format", "Mono").put("eye_order", "LeftRight")
-                .put("width", 640).put("height", 360).put("method", "DirectPlay").put("source", "source").put("session", JSONObject.NULL);
-            runOnMainSync(() -> {
-                try {
-                    java.lang.reflect.Method launchCinema = activity.getClass().getDeclaredMethod("launchCinema", String.class, JSONObject.class);
-                    launchCinema.setAccessible(true); launchCinema.invoke(activity, "movie", videoData);
-                } catch (Exception e) { throw new RuntimeException(e); }
-            });
-            Activity vr = waitForMonitorWithTimeout(vrMonitor, 10000);
-            check(vr != null, "Cinema did not open");
-            check(vr.getTaskId() != activity.getTaskId(), "Cinema inherited the resizable panel task");
-            check(vr.getDisplay().getDisplayId() == android.view.Display.DEFAULT_DISPLAY, "Cinema inherited the panel display");
-            long frameDeadline = SystemClock.uptimeMillis() + 12000;
-            java.lang.reflect.Method submitted = vr.getClass().getMethod("hasSubmittedVideoLayer");
-            while (!((Boolean)submitted.invoke(vr)) && SystemClock.uptimeMillis() < frameDeadline) SystemClock.sleep(100);
-            check((Boolean)submitted.invoke(vr), "Decoder output never reached a submitted cinema layer");
-            SystemClock.sleep(2500);
-            runOnMainSync(vr::finish); await("Playback closed.");
-            result.putString("stream", "OK: artwork, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task and submitted video layer\n"); finish(-1, result);
+            // Each background uses the same real surface decoder, transport atlas and stereo renderer.
+            for (String environment : new String[]{"cinema", "passthrough", "loft"}) {
+                context.getSharedPreferences("app", 0).edit().putString("environment", environment)
+                    .putFloat("screen_curve", environment.equals("passthrough") ? 0f : 1.2f).commit();
+                ActivityMonitor vrMonitor = addMonitor("org.questjellyfin.player.VrActivity", null, false);
+                JSONObject videoData = new JSONObject().put("title", "XR smoke video").put("url", url + "/Videos/movie/stream")
+                    .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("format", environment.equals("loft") ? "HalfSideBySide" : "Mono").put("eye_order", "LeftRight")
+                    .put("width", 640).put("height", 360).put("method", "DirectPlay").put("source", "source").put("session", JSONObject.NULL);
+                runOnMainSync(() -> {
+                    try {
+                        java.lang.reflect.Method launchCinema = activity.getClass().getDeclaredMethod("launchCinema", String.class, JSONObject.class);
+                        launchCinema.setAccessible(true); launchCinema.invoke(activity, "movie", videoData);
+                    } catch (Exception e) { throw new RuntimeException(e); }
+                });
+                Activity vr = waitForMonitorWithTimeout(vrMonitor, 10000);
+                check(vr != null, "Cinema did not open: " + environment);
+                check(vr.getTaskId() != activity.getTaskId(), "Cinema inherited the resizable panel task");
+                check(vr.getDisplay().getDisplayId() == android.view.Display.DEFAULT_DISPLAY, "Cinema inherited the panel display");
+                java.lang.reflect.Method command = vr.getClass().getMethod("onXrCommand", int.class);
+                java.lang.reflect.Method submitted = vr.getClass().getMethod("hasSubmittedVideoLayer");
+                java.lang.reflect.Method controls = vr.getClass().getMethod("hasSubmittedControls");
+                long frameDeadline = SystemClock.uptimeMillis() + 25000;
+                while (!((Boolean)submitted.invoke(vr)) && SystemClock.uptimeMillis() < frameDeadline) {
+                    // An OS window-focus loss can deliberately pause startup; explicit Play is required.
+                    if (!playing(vr)) command.invoke(vr, 0);
+                    SystemClock.sleep(500);
+                }
+                check((Boolean)submitted.invoke(vr), "No submitted video layer: " + environment);
+                check((Boolean)controls.invoke(vr), "No submitted controls layer: " + environment);
+                if (!playing(vr)) { command.invoke(vr, 0); SystemClock.sleep(300); }
+                check(playing(vr), "Video did not start: " + environment);
+                command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
+                command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
+                java.lang.reflect.Field epochField = vr.getClass().getDeclaredField("xrEpoch"); epochField.setAccessible(true);
+                long epoch = epochField.getLong(vr);
+                java.lang.reflect.Method focus = vr.getClass().getMethod("onXrFocusChanged", long.class, boolean.class);
+                focus.invoke(vr, epoch - 1, false); SystemClock.sleep(150); check(playing(vr), "Stale XR callback paused current playback");
+                focus.invoke(vr, epoch, false); SystemClock.sleep(200); check(!playing(vr), "Focus loss did not pause MediaPlayer");
+                focus.invoke(vr, epoch, true); SystemClock.sleep(200); check(!playing(vr), "Focus return auto-resumed playback");
+                command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Explicit resume failed");
+                vr.getClass().getMethod("onXrSeek", int.class).invoke(vr, 500); SystemClock.sleep(500);
+                final int[] position = {0};
+                runOnMainSync(() -> { try {
+                    java.lang.reflect.Field playerField = vr.getClass().getDeclaredField("player"); playerField.setAccessible(true);
+                    position[0] = ((android.media.MediaPlayer)playerField.get(vr)).getCurrentPosition();
+                } catch (Exception e) { throw new RuntimeException(e); } });
+                check(position[0] >= 13000 && position[0] <= 18000, "Timeline seek failed: " + position[0]);
+                command.invoke(vr, 3); SystemClock.sleep(200); // Empty audio list is a visible, recoverable state.
+                saveControls(vr, "controls-" + environment);
+                command.invoke(vr, 4); await("Playback closed."); removeMonitor(vrMonitor);
+            }
+            result.putString("stream", "OK: artwork, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
         } catch (Throwable error) { result.putString("stream", "FAILED: " + error + "\n"); finish(0, result); }
     }
 }

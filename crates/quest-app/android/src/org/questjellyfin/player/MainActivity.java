@@ -360,7 +360,8 @@ public class MainActivity extends Activity {
     private void launchCinema(String item, JSONObject data) {
         Intent intent = new Intent(this, VrActivity.class); intent.addCategory("com.oculus.intent.category.VR"); intent.addCategory("org.khronos.openxr.intent.category.IMMERSIVE_HMD");
         intent.putExtra("server", server).putExtra("device", device).putExtra("item", item).putExtra("playback", data.toString())
-            .putExtra("passthrough", prefs.getBoolean("passthrough", false))
+            .putExtra("environment", prefs.getString("environment", prefs.getBoolean("passthrough", false) ? "passthrough" : "cinema"))
+            .putExtra("passthrough", prefs.getString("environment", prefs.getBoolean("passthrough", false) ? "passthrough" : "cinema").equals("passthrough"))
             .putExtra("screen_width", QuestPreferences.screenWidth(prefs.getFloat("screen_width", QuestPreferences.DEFAULT_WIDTH)))
             .putExtra("screen_distance", QuestPreferences.screenDistance(prefs.getFloat("screen_distance", QuestPreferences.DEFAULT_DISTANCE)));
         loading("Starting immersive cinema…");
@@ -457,10 +458,12 @@ public class MainActivity extends Activity {
         choice(content, "Streaming bitrate ceiling", "quality", new String[]{"Original / device default (up to 120 Mbps)", "80 Mbps", "40 Mbps", "20 Mbps"}, new String[]{"original", "80000000", "40000000", "20000000"}, "original");
         toggle(content, "Allow Jellyfin server transcoding", "allow_transcoding", true);
         content.addView(label("A lower ceiling can trigger conversion and reduce picture quality. Disable transcoding to require direct play or remux.", 17));
-        content.addView(heading("Cinema")); toggle(content, "Show the room with passthrough", "passthrough", false); toggle(content, "Resume from Jellyfin's saved position", "resume", true);
+        content.addView(heading("Cinema"));
+        choice(content, "Environment", "environment", new String[]{"Dark cinema", "Room / passthrough", "Furnished loft"}, new String[]{"cinema", "passthrough", "loft"}, prefs.getBoolean("passthrough", false) ? "passthrough" : "cinema");
+        toggle(content, "Resume from Jellyfin's saved position", "resume", true);
         slider(content, "Screen width", "screen_width", 1.5f, 6f, QuestPreferences.screenWidth(prefs.getFloat("screen_width", QuestPreferences.DEFAULT_WIDTH)));
         slider(content, "Viewing distance", "screen_distance", 1f, 5f, QuestPreferences.screenDistance(prefs.getFloat("screen_distance", QuestPreferences.DEFAULT_DISTANCE)));
-        content.addView(label("The cinema opens in front of your current viewing direction. Push the thumbstick up to recenter it.", 17));
+        content.addView(label("Point and trigger / pinch to use the cinema controls. Grip or pinch an edge to move the screen; drag a corner to resize. Use Flatter / Curve + to bend it, or Recenter to bring it in front of you. Removing the headset pauses playback; press Play after returning.", 17));
         choice(content, "Library sorting", "sort", new String[]{"Title", "Recently added"}, new String[]{"name", "latest"}, "name");
         content.addView(heading("Poster size")); RadioGroup columns = new RadioGroup(this); int count = QuestPreferences.columns(prefs.getInt("columns", 5));
         for (int n = 3; n <= 6; n++) { final int value = n; RadioButton b = new RadioButton(this); b.setText(n + " columns"); b.setTextSize(18); b.setTextColor(Color.WHITE); b.setMinHeight(dp(48)); b.setChecked(n == count); b.setOnClickListener(v -> prefs.edit().putInt("columns", value).apply()); columns.addView(b); } content.addView(columns);

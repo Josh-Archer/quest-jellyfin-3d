@@ -5,10 +5,15 @@ use jni::{
     JNIEnv,
 };
 use quest_jellyfin_player::{
-    build_stereo_quad_layers_at_pose, EyeOrder, StereoFormat, VirtualScreenConfig,
+    build_stereo_cylinder_layers_at_pose, build_stereo_quad_layers_at_pose,
+    screen_controls::{panel_pose, Button, ScreenControls, PANEL_SIZE},
+    EyeOrder, StereoFormat, VirtualScreenConfig,
 };
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
+use xr_core::spatial::{
+    HandGestureDetector, Handedness, InteractionInput, Quat, ScreenPose, ScreenTransform, Vec3,
+};
 use xr_core::{OpenXrContext, XrConfig};
 use xr_video::graphics::vulkan::VulkanContext;
 
@@ -240,32 +245,48 @@ fn run_xr(
     if passthrough && !xr.is_passthrough_enabled() {
         return Err("Passthrough is unavailable on this headset".into());
     }
-    let mut images = Vec::new();
-    for index in 0..8 {
-        let bytes = env
-            .call_method(activity, "loadingPixels", "(I)[B", &[JValue::Int(index)])
-            .map_err(|_| "Cannot create loading display")?
-            .l()
-            .map_err(|_| "Invalid loading display")?;
-        let rgba = env
-            .convert_byte_array(JByteArray::from(bytes))
-            .map_err(|_| "Invalid loading pixels")?;
-        if rgba.len() != 512 * 256 * 4 {
-            return Err("Invalid loading display dimensions".into());
-        }
-        images.push(rgba);
-    }
     let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
-    let mut controls = crate::controls::PlaybackControls::default();
+    let mut controls = ScreenControls::default();
+    let mut gestures = HandGestureDetector::default();
+    let loft = !passthrough
+        && env
+            .call_method(activity, "isLoft", "()Z", &[])
+            .map_err(|_| "Cannot read cinema environment")?
+            .z()
+            .map_err(|_| "Invalid environment")?;
+    let mut loft_anchor = None;
     let mut surface_started = false;
-    let screen = VirtualScreenConfig {
+    let mut screen = VirtualScreenConfig {
         screen_width_m: screen_width,
         distance_m: screen_distance,
         ..Default::default()
     };
-    let mut cinema_pose = None;
-    let mut recenter_down = false;
-    let animation_start = std::time::Instant::now();
+    let mut transform = ScreenTransform {
+        position: Vec3::new(0.0, 0.0, -screen_distance),
+        orientation: Quat::IDENTITY,
+        quad_size: (
+            screen_width,
+            screen_width
+                / quest_jellyfin_player::calculate_display_aspect_ratio(format, width, height),
+        ),
+        distance: screen_distance,
+        display_mode: xr_core::DisplayMode::FlatQuad,
+        ..Default::default()
+    };
+    let curve = env
+        .call_method(activity, "initialCurve", "()F", &[])
+        .map_err(|_| "Cannot read screen curvature")?
+        .f()
+        .map_err(|_| "Invalid curvature")?;
+    if xr.supports_cylinder() && curve.is_finite() {
+        quest_jellyfin_player::screen_controls::bend(&mut transform, curve.clamp(0.0, 2.4));
+    }
+    let mut anchored = false;
+    let mut atlas_ready = false;
+    let mut atlas_refresh = std::time::Instant::now() - Duration::from_secs(1);
+    let mut frame_clock = std::time::Instant::now();
+    let mut had_video_frame = false;
+    let mut reported_controls = false;
     let mut last_diagnostic = std::time::Instant::now();
     let mut previous_session_state = None;
     let mut submitted_frames = 0_u64;
@@ -280,6 +301,17 @@ fn run_xr(
                     xr.is_session_running()
                 ));
                 previous_session_state = Some(state);
+                let focused = state == openxr::SessionState::FOCUSED;
+                env.call_method(
+                    activity,
+                    "onXrFocusChanged",
+                    "(JZ)V",
+                    &[JValue::Long(epoch as jlong), JValue::Bool(focused as u8)],
+                )
+                .map_err(|_| "Cannot update headset presence")?;
+                if !focused {
+                    controls.suspend();
+                }
             }
             if !xr.is_session_running() {
                 std::thread::sleep(Duration::from_millis(30));
@@ -306,6 +338,13 @@ fn run_xr(
                         xr.resize_desktop_surface((width, height))
                             .map_err(|e| e.to_string())?;
                         size = next;
+                        let w = transform.size_m().0;
+                        let aspect = quest_jellyfin_player::calculate_display_aspect_ratio(
+                            format, width, height,
+                        );
+                        transform.quad_size = (w, w / aspect);
+                        transform.aspect_ratio = aspect;
+                        had_video_frame = false;
                         surface_started = false;
                     }
                 }
@@ -335,48 +374,140 @@ fn run_xr(
             xr.begin_frame().map_err(|e| e.to_string())?;
             xr.poll_interaction(frame.predicted_display_time)
                 .map_err(|e| e.to_string())?;
-            use xr_core::spatial::interaction::Handedness;
-            let left = xr.interaction().controller_state(Handedness::Left);
-            let right = xr.interaction().controller_state(Handedness::Right);
-            let trigger = [left, right]
-                .into_iter()
-                .flatten()
-                .any(|s| s.is_selecting());
-            let stick = [left, right]
-                .into_iter()
-                .flatten()
-                .map(|s| s.thumbstick.0)
-                .max_by(|a, b| a.abs().total_cmp(&b.abs()))
-                .unwrap_or(0.0);
-            let grip = [left, right].into_iter().flatten().any(|s| s.is_grabbing());
-            let recenter = [left, right]
-                .into_iter()
-                .flatten()
-                .any(|s| s.thumbstick.1 > 0.75);
-            if recenter && !recenter_down {
-                cinema_pose = None;
+            let head = xr.head_pose_at(frame.predicted_display_time);
+            if loft && loft_anchor.is_none() {
+                if let Some(head) = head {
+                    let forward = head.orientation.rotate_vec(-Vec3::UNIT_Z);
+                    let yaw = (-forward.x).atan2(-forward.z);
+                    loft_anchor = Some(ScreenPose::new(
+                        Vec3::new(head.position.x, 0.0, head.position.z),
+                        Quat::from_axis_angle(Vec3::UNIT_Y, yaw),
+                    ));
+                }
             }
-            recenter_down = recenter;
-            if cinema_pose.is_none() {
-                cinema_pose = xr.head_pose_at(frame.predicted_display_time).map(|head| {
-                    quest_jellyfin_player::cinema::pose_in_front(head, screen.distance_m)
-                });
+            if !anchored {
+                if let Some(head) = head {
+                    let pose =
+                        quest_jellyfin_player::cinema::pose_in_front(head, screen.distance_m);
+                    transform.position = pose.position;
+                    transform.orientation = pose.orientation;
+                    anchored = true;
+                }
             }
-            if let Some(command) = controls.update(trigger, stick, grip) {
+            let focused = state == openxr::SessionState::FOCUSED;
+            let mut inputs = Vec::new();
+            if focused && head.is_some() {
+                for hand in [Handedness::Left, Handedness::Right] {
+                    let controller = xr.interaction().controller_state(hand);
+                    let joints = xr
+                        .locate_hand_joints(hand, frame.predicted_display_time)
+                        .map_err(|e| e.to_string())?;
+                    if let Some(joints) = joints.filter(|j| j.is_active) {
+                        let gesture = gestures.update(hand, &joints);
+                        inputs.push(InteractionInput::from_tracked_hand(
+                            hand,
+                            &gesture,
+                            controller.as_ref(),
+                        ));
+                    } else if let Some(controller) = controller {
+                        inputs.push(InteractionInput::from_controller(hand, &controller));
+                    }
+                }
+            }
+            let dt = frame_clock.elapsed().as_secs_f32().min(0.05);
+            frame_clock = std::time::Instant::now();
+            let before = transform.clone();
+            let was_grabbing = controls.grab.is_grabbing();
+            let command = head
+                .filter(|_| focused)
+                .and_then(|head| controls.update(&inputs, head, &mut transform, dt));
+            if !focused || head.is_none() {
+                controls.suspend();
+            }
+            if let Some(command) = command {
                 let code = match command {
-                    crate::controls::Command::TogglePlayback => 0,
-                    crate::controls::Command::SeekBack => 1,
-                    crate::controls::Command::SeekForward => 2,
-                    crate::controls::Command::NextAudioTrack => 3,
+                    Button::Seek(fraction) => {
+                        env.call_method(
+                            activity,
+                            "onXrSeek",
+                            "(I)V",
+                            &[JValue::Int(i32::from(fraction))],
+                        )
+                        .map_err(|_| "Cannot seek video")?;
+                        None
+                    }
+                    Button::PlayPause => Some(0),
+                    Button::Back => Some(1),
+                    Button::Forward => Some(2),
+                    Button::Audio => Some(3),
+                    Button::Exit => Some(4),
+                    Button::Smaller => {
+                        quest_jellyfin_player::screen_controls::resize(&mut transform, 0.9);
+                        None
+                    }
+                    Button::Larger => {
+                        quest_jellyfin_player::screen_controls::resize(&mut transform, 1.1);
+                        None
+                    }
+                    Button::Flatter => {
+                        quest_jellyfin_player::screen_controls::bend(&mut transform, -0.3);
+                        None
+                    }
+                    Button::Curvier => {
+                        if xr.supports_cylinder() {
+                            quest_jellyfin_player::screen_controls::bend(&mut transform, 0.3);
+                        }
+                        None
+                    }
+                    Button::Recenter => {
+                        controls.grab.release();
+                        if let Some(head) = head {
+                            let pose = quest_jellyfin_player::cinema::pose_in_front(
+                                head,
+                                screen.distance_m,
+                            );
+                            transform.position = pose.position;
+                            transform.orientation = pose.orientation;
+                            anchored = true;
+                        } else {
+                            anchored = false;
+                        }
+                        None
+                    }
+                    Button::Hide => None,
                 };
-                env.call_method(activity, "onXrCommand", "(I)V", &[JValue::Int(code)])
-                    .map_err(|_| "Cannot send playback control")?;
+                if let Some(code) = code {
+                    env.call_method(activity, "onXrCommand", "(I)V", &[JValue::Int(code)])
+                        .map_err(|_| "Cannot send playback control")?;
+                }
+            }
+            if (transform != before || was_grabbing) && !controls.grab.is_grabbing() {
+                let distance = head
+                    .map(|h| (transform.position - h.position).length())
+                    .unwrap_or(screen.distance_m);
+                env.call_method(
+                    activity,
+                    "onXrScreenChanged",
+                    "(FFF)V",
+                    &[
+                        JValue::Float(transform.size_m().0),
+                        JValue::Float(distance),
+                        JValue::Float(
+                            if transform.display_mode == xr_core::DisplayMode::CurvedCylinder {
+                                transform.curve_angle
+                            } else {
+                                0.0
+                            },
+                        ),
+                    ],
+                )
+                .map_err(|_| "Cannot save screen preferences")?;
             }
             if last_diagnostic.elapsed() >= Duration::from_secs(2) {
                 diagnostic(&format!(
                     "XR frame render={} tracked={} video={} submitted={submitted_frames}",
                     frame.should_render,
-                    cinema_pose.is_some(),
+                    anchored,
                     VIDEO_STATE.load(Ordering::Acquire)
                 ));
                 last_diagnostic = std::time::Instant::now();
@@ -386,39 +517,168 @@ fn run_xr(
                     .map_err(|e| e.to_string())?;
                 continue;
             }
-            // Loading must remain visible even before positional tracking is available.
-            if VIDEO_STATE.load(Ordering::Acquire) != 1 {
-                let phase = (animation_start.elapsed().as_millis() / 100 % 8) as usize;
-                xr.render_and_present_layers(
-                    frame.predicted_display_time,
-                    &config,
+            // A regular HUD swapchain remains available while the surface decoder is loading,
+            // paused, or buffering. Transport never depends on the decoder's first frame.
+            if atlas_refresh.elapsed() >= Duration::from_millis(250) || !atlas_ready {
+                let pixels = env
+                    .call_method(activity, "controlsPixels", "()[B", &[])
+                    .map_err(|_| "Cannot draw cinema controls")?
+                    .l()
+                    .map_err(|_| "Invalid cinema controls")?;
+                let bytes = JByteArray::from(pixels);
+                let mut rgba = env
+                    .convert_byte_array(&bytes)
+                    .map_err(|_| "Invalid control pixels")?;
+                env.delete_local_ref(bytes)
+                    .map_err(|_| "Cannot release control pixels")?;
+                if rgba.len() != 512 * 256 * 4 {
+                    return Err("Invalid cinema controls dimensions".into());
+                }
+                crate::cinema_atlas::add_handles(&mut rgba);
+                crate::cinema_atlas::upload(
+                    xr.hud_swapchain().ok_or("No cinema control swapchain")?,
                     &vulkan,
-                    Some(&images[phase]),
-                    &xr_core::openxr::overlay::OverlayScene::default(),
-                )
-                .map_err(|e| e.to_string())?;
-                submitted_frames += 1;
-                continue;
+                    &rgba,
+                )?;
+                atlas_ready = true;
+                atlas_refresh = std::time::Instant::now();
             }
-            let (reference, pose) =
-                quest_jellyfin_player::cinema::select_pose(cinema_pose, screen.distance_m);
-            let space = match reference {
-                quest_jellyfin_player::cinema::CinemaReference::Stage => xr.stage_space(),
-                quest_jellyfin_player::cinema::CinemaReference::View => xr.view_space(),
+            if VIDEO_STATE.load(Ordering::Acquire) == 1 {
+                had_video_frame = true;
+            }
+            let space = if anchored {
+                xr.stage_space()
+            } else {
+                xr.view_space()
             }
             .ok_or("No OpenXR cinema reference space")?;
+            let hud = xr.hud_swapchain().ok_or("No cinema control swapchain")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
-            let layers = build_stereo_quad_layers_at_pose(
-                space,
-                swapchain,
-                format,
-                order,
-                size.width,
-                size.height,
-                &screen,
-                pose.into(),
-            )
-            .map_err(|e| e.to_string())?;
+            screen.screen_width_m = transform.size_m().0;
+            let quad_layers =
+                if had_video_frame && transform.display_mode == xr_core::DisplayMode::FlatQuad {
+                    build_stereo_quad_layers_at_pose(
+                        space,
+                        swapchain,
+                        format,
+                        order,
+                        size.width,
+                        size.height,
+                        &screen,
+                        transform.pose().into(),
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    Vec::new()
+                };
+            let cylinder_layers = if had_video_frame
+                && transform.display_mode == xr_core::DisplayMode::CurvedCylinder
+            {
+                build_stereo_cylinder_layers_at_pose(
+                    space,
+                    swapchain,
+                    format,
+                    order,
+                    size.width,
+                    size.height,
+                    transform.cylinder_axis_pose().into(),
+                    transform.curve_radius,
+                    transform.curve_angle,
+                    transform.aspect_ratio,
+                )
+                .map_err(|e| e.to_string())?
+            } else {
+                Vec::new()
+            };
+            let mut overlays = Vec::new();
+            let room = loft_anchor
+                .map(quest_jellyfin_player::environment::loft_surfaces)
+                .unwrap_or_default();
+            let room_layers: Vec<_> = room
+                .iter()
+                .map(|surface| {
+                    crate::cinema_atlas::quad(space, hud, surface.rect, surface.pose, surface.size)
+                })
+                .collect();
+            if controls.visible || !had_video_frame {
+                let view = xr.view_space().ok_or("No control reference space")?;
+                overlays.push(crate::cinema_atlas::quad(
+                    view,
+                    hud,
+                    (0, 0, 512, 192),
+                    panel_pose(ScreenPose::new(Vec3::ZERO, Quat::IDENTITY)),
+                    PANEL_SIZE,
+                ));
+            }
+            if had_video_frame {
+                // Persistent handles make manipulation discoverable before a hover.
+                for corner in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                    let chrome = xr_core::openxr::overlay::window_chrome(
+                        &transform,
+                        Some(corner),
+                        false,
+                        Some(corner),
+                    );
+                    if let Some(handle) = chrome.corner {
+                        overlays.push(crate::cinema_atlas::quad(
+                            space,
+                            hud,
+                            (64, 192, 64, 64),
+                            handle.pose,
+                            handle.size,
+                        ));
+                    }
+                }
+                let chrome = xr_core::openxr::overlay::window_chrome(
+                    &transform,
+                    Some((0.5, 1.05)),
+                    true,
+                    None,
+                );
+                if let Some(handle) = chrome.bar {
+                    overlays.push(crate::cinema_atlas::quad(
+                        space,
+                        hud,
+                        (128, 192, 128, 12),
+                        handle.pose,
+                        handle.size,
+                    ));
+                }
+            }
+            if let Some(head) = head.filter(|_| focused) {
+                for input in &inputs {
+                    if let Some(ray) = input.aim_ray {
+                        let panel = controls
+                            .visible
+                            .then(|| {
+                                xr_core::spatial::ray_intersects_quad(
+                                    &ray,
+                                    &panel_pose(head),
+                                    PANEL_SIZE,
+                                )
+                            })
+                            .flatten();
+                        let screen_hit =
+                            ScreenTransform::find_closest_window_hit(&ray, [(0, &transform)])
+                                .map(|(_, hit)| hit);
+                        if let Some(hit) = panel.or(screen_hit) {
+                            let pointer = xr_core::openxr::overlay::PointerVisual {
+                                origin: ray.origin,
+                                direction: ray.direction,
+                                length: hit.distance,
+                                hit: true,
+                            };
+                            overlays.push(crate::cinema_atlas::quad(
+                                xr.stage_space().ok_or("No pointer reference space")?,
+                                hud,
+                                (0, 192, 48, 48),
+                                xr_core::openxr::overlay::cursor_pose(&pointer),
+                                (0.024, 0.024),
+                            ));
+                        }
+                    }
+                }
+            }
             let pt_layer = xr
                 .passthrough()
                 .passthrough_layer()
@@ -428,11 +688,25 @@ fn run_xr(
             if let Some(ref layer) = pt_layer {
                 refs.push(&**layer);
             }
-            refs.extend(layers.iter().map(|layer| &**layer));
+            refs.extend(room_layers.iter().map(|layer| &**layer));
+            refs.extend(quad_layers.iter().map(|layer| &**layer));
+            refs.extend(cylinder_layers.iter().map(|layer| &**layer));
+            refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
                 .map_err(|e| e.to_string())?;
             submitted_frames += 1;
-            if !reported_video_layer {
+            if !reported_controls {
+                env.call_method(
+                    activity,
+                    "onXrControlsSubmitted",
+                    "(J)V",
+                    &[JValue::Long(epoch as jlong)],
+                )
+                .map_err(|_| "Cannot confirm controls presentation")?;
+                diagnostic("XR controls layer submitted");
+                reported_controls = true;
+            }
+            if had_video_frame && !reported_video_layer {
                 env.call_method(
                     activity,
                     "onXrVideoLayerSubmitted",
