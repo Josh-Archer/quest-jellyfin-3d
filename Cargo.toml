@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/jellyfin",
     "crates/jellyfin-player",
     "crates/quest-jellyfin-player",
     "crates/quest-app",
@@ -24,6 +23,13 @@ tokio = { version = "1.43", features = ["full"] }
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 wiremock = "0.6"
-# Shared XR/video crates from DeskQuest, pinned; not copied. Includes xr_video::format (DeskQuest#220).
-xr-core = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
-xr-video = { git = "https://github.com/Josh-Archer/DeskQuest", rev = "6e2b0ece2bbbfe0810a7d71a8d4d14f23f6737c3" }
+# Published from https://github.com/Josh-Archer/questkit.
+xr-core = "0.1"
+xr-video = "0.1"
+jellyfin-client = "0.1"
+
+# Until questkit 0.1.0 is published to crates.io, resolve it from git; delete this section afterwards.
+[patch.crates-io]
+xr-core = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }
+xr-video = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }
+jellyfin-client = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }

@@ -1,6 +1,6 @@
 # Jellyfin 3D for Quest
 
-A work-in-progress native Jellyfin client for Quest, using the Jellyfin HTTP API and the reusable `xr-core` and `xr-video` crates from [DeskQuest](https://github.com/Josh-Archer/DeskQuest). This project is independent of Jellyfin; it does not use a web player.
+A work-in-progress native Jellyfin client for Quest, built on the reusable `xr-core`, `xr-video` and `jellyfin-client` crates from [questkit](https://github.com/Josh-Archer/questkit) (extracted from [DeskQuest](https://github.com/Josh-Archer/DeskQuest)). This project is independent of Jellyfin; it does not use a web player.
 
 ## Current capabilities
 
@@ -25,10 +25,9 @@ Quick Connect tokens are kept in the application's private, backup-excluded stor
 ## Layout
 
 - `crates/quest-app`: Android panel, Rust API bridge, private session store, immersive activity, and APK build script.
-- `crates/jellyfin`: typed Jellyfin API client, device profile and session models.
 - `crates/quest-jellyfin-player`: format detection, per-eye geometry, and playback primitives.
 - `crates/jellyfin-player`: original XR crate scaffold.
-- `xr-core` and `xr-video`: pinned Git dependencies from DeskQuest, not copied into this repository. The Android build uses the packaging harness from the resolved `xr-core` revision.
+- `xr-core`, `xr-video` and `jellyfin-client`: versioned crates from [questkit](https://github.com/Josh-Archer/questkit), not copied into this repository. The Jellyfin API client lives there (it was `crates/jellyfin`). The Android build uses the packaging harness from the resolved `xr-core` package.
 
 ## Build and test
 
@@ -52,7 +51,5 @@ The automated tests include a mock API flow for pairing, library browsing, playb
 ## Roadmap
 
 The [project roadmap](https://github.com/Josh-Archer/quest-jellyfin-3d/issues/2) tracks Jellyfin integration, stereoscopic playback, immersive projections, subtitles and audio, MV-HEVC, server conversion, and remote playback.
-
-The shared DeskQuest repository is private. CI uses the read-only `DESKQUEST_DEPLOY_KEY` repository secret to fetch the pinned Cargo dependencies.
 
 Device verification: `crates/quest-app/android/tests/device-smoke.sh` uses isolated packages and a local fixture server. It checks all three environments, stereo cylinder submission, transport submission, play/pause/precise seek/audio/exit, and real MediaPlayer response to injected focus callbacks. The Rust tests simulate controller and hand screen dragging, corner resizing, tracking loss, transport hit testing and curvature geometry. These checks do not replace wearer validation of gestures, visible composition, comfort or the physical headset-removal sensor path.

@@ -8,18 +8,6 @@ jobs:
     runs-on: home-gh-runner-quest-jellyfin-3d
     steps:
       - uses: actions/checkout@v4
-      # DeskQuest is private. The repository secret contains a read-only deploy key.
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DESKQUEST_DEPLOY_KEY }}
-      - name: Trust GitHub SSH host key
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
-      - name: Fetch DeskQuest through its deploy key
-        run: git config --global url."git@github.com:Josh-Archer/DeskQuest".insteadOf "https://github.com/Josh-Archer/DeskQuest"
-      - run: echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,6 +17,25 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Verify questkit crates are consumed as registry dependencies
+        # They must be versioned dependencies, never workspace members or path copies, and the
+        # Android packaging harness must resolve from the resolved xr-core package.
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --locked > /tmp/metadata.json
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("/tmp/metadata.json"))
+          members = set(d["workspace_members"])
+          for name in ("xr-core", "xr-video", "jellyfin-client"):
+              pkg = next(p for p in d["packages"] if p["name"] == name)
+              assert pkg["id"] not in members, f"{name} must not be a workspace member"
+              src = pkg["source"] or ""
+              assert src.startswith(("registry+", "git+")), f"{name} resolved from {src!r}"
+              print(name, pkg["version"], src)
+              if name == "xr-core":
+                  assert os.path.isfile(os.path.join(os.path.dirname(pkg["manifest_path"]), "android", "build.sh"))
+          PY
       - run: crates/quest-app/android/tests/run.sh
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

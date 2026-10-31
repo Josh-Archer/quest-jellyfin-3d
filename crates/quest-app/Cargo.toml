@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64 = "0.22"
-jellyfin-client = { path = "../jellyfin" }
+jellyfin-client.workspace = true
 quest-jellyfin-player = { path = "../quest-jellyfin-player" }
 serde.workspace = true
 serde_json.workspace = true
