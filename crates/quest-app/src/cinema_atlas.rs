@@ -3,6 +3,7 @@
 use ash::vk::{self, Handle};
 use openxr::{Swapchain, Vulkan};
 use xr_core::spatial::ScreenPose;
+use xr_core::spatial::ScreenTransform;
 use xr_video::graphics::vulkan::VulkanContext;
 
 pub fn upload(sc: &Swapchain<Vulkan>, vulkan: &VulkanContext, rgba: &[u8]) -> Result<(), String> {
@@ -45,6 +46,35 @@ fn check(result: openxr::sys::Result) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+pub fn cylinder<'a>(
+    space: &'a openxr::Space,
+    sc: &'a Swapchain<Vulkan>,
+    rect: (i32, i32, i32, i32),
+    panel: &ScreenTransform,
+) -> openxr::CompositionLayerCylinderKHR<'a, Vulkan> {
+    openxr::CompositionLayerCylinderKHR::new()
+        .space(space)
+        .layer_flags(openxr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+        .eye_visibility(openxr::EyeVisibility::BOTH)
+        .sub_image(
+            openxr::SwapchainSubImage::new()
+                .swapchain(sc)
+                .image_rect(openxr::Rect2Di {
+                    offset: openxr::Offset2Di {
+                        x: rect.0,
+                        y: rect.1,
+                    },
+                    extent: openxr::Extent2Di {
+                        width: rect.2,
+                        height: rect.3,
+                    },
+                }),
+        )
+        .pose(panel.cylinder_axis_pose().into())
+        .radius(panel.curve_radius)
+        .central_angle(panel.curve_angle)
+        .aspect_ratio(panel.aspect_ratio)
 }
 pub fn quad<'a>(
     space: &'a openxr::Space,
