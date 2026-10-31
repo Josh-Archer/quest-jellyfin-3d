@@ -5,7 +5,7 @@ on:
 jobs:
   check:
     # ARC scale set from Josh-Archer/home PR #3956.
-    runs-on: home-gh-runner-quest-jellyfin-3d
+    runs-on: uecb-shared
     steps:
       - uses: actions/checkout@v4
       # DeskQuest is private. The repository secret contains a read-only deploy key.
