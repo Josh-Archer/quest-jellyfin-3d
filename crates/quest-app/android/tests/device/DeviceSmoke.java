@@ -58,6 +58,22 @@ public class DeviceSmoke extends Instrumentation {
     private boolean playing(Activity vr) {
         final boolean[] result = {false}; runOnMainSync(() -> { try { result[0] = (Boolean)vr.getClass().getMethod("isVideoPlaying").invoke(vr); } catch (Exception e) { throw new RuntimeException(e); } }); return result[0];
     }
+    private String startupState(Activity vr, boolean requestPlay) {
+        final String[] state = {""};
+        runOnMainSync(() -> { try {
+            java.lang.reflect.Field gateField = vr.getClass().getDeclaredField("playbackGate"); gateField.setAccessible(true);
+            Object gate = gateField.get(vr);
+            java.lang.reflect.Field focusedField = gate.getClass().getDeclaredField("focused"); focusedField.setAccessible(true);
+            java.lang.reflect.Field wantsField = gate.getClass().getDeclaredField("wantsPlay"); wantsField.setAccessible(true);
+            java.lang.reflect.Field readyField = vr.getClass().getDeclaredField("readyToPlay"); readyField.setAccessible(true);
+            boolean focused = focusedField.getBoolean(gate), wants = wantsField.getBoolean(gate), ready = readyField.getBoolean(vr);
+            // Simulate explicit Play only after an actual focus interruption. A prepared/buffering
+            // player can want playback before isPlaying becomes true; toggling then pauses it.
+            if (requestPlay && focused && ready && !wants) vr.getClass().getMethod("onXrCommand", int.class).invoke(vr, 0);
+            state[0] = "focused=" + focused + " wantsPlay=" + wants + " ready=" + ready + " windowFocus=" + vr.hasWindowFocus();
+        } catch (Exception e) { throw new RuntimeException(e); } });
+        return state[0];
+    }
     private void saveControls(Activity vr, String name) throws Exception {
         java.lang.reflect.Method art=vr.getClass().getMethod("controlsPixels",int.class,boolean.class,float.class);
         byte[] normal=(byte[])art.invoke(vr,-1,false,1f), hidden=(byte[])art.invoke(vr,-1,false,0f);
@@ -135,15 +151,13 @@ public class DeviceSmoke extends Instrumentation {
                 java.lang.reflect.Method submitted = vr.getClass().getMethod("hasSubmittedVideoLayer");
                 java.lang.reflect.Method controls = vr.getClass().getMethod("hasSubmittedControls");
                 long frameDeadline = SystemClock.uptimeMillis() + 25000;
-                while (!((Boolean)submitted.invoke(vr)) && SystemClock.uptimeMillis() < frameDeadline) {
-                    // An OS window-focus loss can deliberately pause startup; explicit Play is required.
-                    if (!playing(vr)) command.invoke(vr, 0);
-                    SystemClock.sleep(500);
+                while ((!((Boolean)submitted.invoke(vr)) || !playing(vr)) && SystemClock.uptimeMillis() < frameDeadline) {
+                    startupState(vr, true);
+                    SystemClock.sleep(200);
                 }
                 check((Boolean)submitted.invoke(vr), "No submitted video layer: " + environment);
                 check((Boolean)controls.invoke(vr), "No submitted controls layer: " + environment);
-                if (!playing(vr)) { command.invoke(vr, 0); SystemClock.sleep(300); }
-                check(playing(vr), "Video did not start: " + environment);
+                check(playing(vr), "Video did not start: " + environment + " " + startupState(vr, false));
                 command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
                 command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
                 java.lang.reflect.Field epochField = vr.getClass().getDeclaredField("xrEpoch"); epochField.setAccessible(true);
