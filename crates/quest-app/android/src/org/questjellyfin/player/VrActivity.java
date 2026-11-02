@@ -21,6 +21,7 @@ public class VrActivity extends Activity {
     private native void nativeStop();
     private native void nativeVideoState(long epoch, int state);
     private native long nativeArm();
+    private native void nativePlaybackStatus(long epoch, boolean playing);
     private native void nativeVideoSize(long epoch, int width, int height);
     private final ExecutorService xrThread = Executors.newSingleThreadExecutor();
     private final ExecutorService reports = Executors.newSingleThreadExecutor();
@@ -42,7 +43,9 @@ public class VrActivity extends Activity {
     private PlaybackGate playbackGate = new PlaybackGate();
     private boolean prepared;
     private boolean readyToPlay;
-    private volatile String transportStatus = "Preparing video…";
+    private volatile String videoTitle = "Jellyfin";
+    private volatile String statusLabel = "Preparing…";
+    private volatile String transportTime = "0:00 / 0:00";
     private volatile String playLabel = "Pause";
     private volatile float progressFraction;
     private volatile String screenStatus = "Flat screen";
@@ -68,6 +71,7 @@ public class VrActivity extends Activity {
         playbackGate = new PlaybackGate(); lastTicks = 0;
         try {
             data = new JSONObject(getIntent().getStringExtra("playback"));
+            videoTitle = data.optString("title", "Jellyfin");
             server = getIntent().getStringExtra("server"); device = getIntent().getStringExtra("device"); item = getIntent().getStringExtra("item");
         } catch (Exception e) { fail("Unable to read the selected playback source."); }
     }
@@ -80,7 +84,7 @@ public class VrActivity extends Activity {
         final long epoch = nativeArm();
         xrEpoch = epoch; videoLayerSubmitted = false; controlsSubmitted = false;
         prepared = false; readyToPlay = false;
-        buffering = false; transportStatus = "Preparing video…";
+        buffering = false; statusLabel = "Preparing…";
         screenStatus = String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
         updateTransport(current);
         ui.postDelayed(() -> {
@@ -98,52 +102,10 @@ public class VrActivity extends Activity {
         if (!focused) interruptPlayback();
     }
     private void interruptPlayback() { playbackGate.interrupt(); applyPlaybackGate(); }
-    /** Transport atlas; pixels 0..191 are the panel, the native code adds shared DeskQuest handles. */
-    public byte[] controlsPixels() {
-        android.graphics.Bitmap image = android.graphics.Bitmap.createBitmap(512, 256, android.graphics.Bitmap.Config.ARGB_8888);
-        android.graphics.Canvas canvas = new android.graphics.Canvas(image);
-        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        p.setColor(android.graphics.Color.rgb(19, 23, 34)); canvas.drawRoundRect(0, 0, 512, 192, 14, 14, p);
-        p.setColor(android.graphics.Color.WHITE); p.setTextSize(17); p.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        canvas.drawText(transportStatus, 12, 25, p);
-        if (transportStatus.startsWith("Preparing") || buffering) {
-            p.setColor(android.graphics.Color.rgb(0, 164, 220)); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(3);
-            canvas.drawArc(422, 10, 440, 28, (android.os.SystemClock.uptimeMillis() / 5) % 360, 260, false, p); p.setStyle(android.graphics.Paint.Style.FILL);
-        }
-        p.setTextSize(14); canvas.drawText("Hide", 461, 25, p);
-        p.setColor(android.graphics.Color.rgb(55, 63, 78)); canvas.drawRoundRect(12, 39, 500, 47, 4, 4, p);
-        p.setColor(android.graphics.Color.rgb(0, 164, 220)); canvas.drawRoundRect(12, 39, 12 + 488 * progressFraction, 47, 4, 4, p);
-        String[][] labels = {{playLabel, "−10 sec", "+10 sec", audioLabel, "Exit"}, {"Smaller", "Larger", "Flatter", "Curve +", "Recenter"}};
-        for (int row = 0; row < 2; row++) for (int column = 0; column < 5; column++) {
-            float left = column * 102.4f + 4, top = row == 0 ? 60 : 106;
-            p.setColor(android.graphics.Color.rgb(39, 51, 68)); canvas.drawRoundRect(left, top, left + 94.4f, top + 40, 7, 7, p);
-            p.setColor(android.graphics.Color.WHITE); p.setTextSize(16); p.setTextAlign(android.graphics.Paint.Align.CENTER);
-            canvas.drawText(labels[row][column], left + 47.2f, top + 26, p);
-        }
-        p.setTextAlign(android.graphics.Paint.Align.CENTER); p.setTextSize(13); p.setColor(android.graphics.Color.LTGRAY);
-        canvas.drawText("Grip / pinch edges: move · Corners: resize", 256, 165, p);
-        canvas.drawText(screenStatus + " · Click / pinch movie to show controls", 256, 183, p);
-        // Reserved loft materials, sampled only by the environment compositor surfaces.
-        p.setColor(android.graphics.Color.rgb(53, 39, 28)); canvas.drawRect(128, 204, 256, 256, p);
-        for (int y = 204; y < 256; y += 4) {
-            p.setColor(android.graphics.Color.rgb(78 + y % 17, 57 + y % 9, 38)); canvas.drawRect(129, y, 255, y + 3, p);
-            p.setColor(android.graphics.Color.rgb(35, 28, 24)); canvas.drawLine(145 + y % 69, y, 145 + y % 69, y + 3, p);
-        }
-        p.setColor(android.graphics.Color.rgb(75, 68, 63)); canvas.drawRect(256, 192, 384, 256, p);
-        p.setStrokeWidth(1); p.setColor(android.graphics.Color.rgb(57, 52, 48));
-        for (int y = 192; y <= 256; y += 4) { canvas.drawLine(256, y, 384, y, p); for (int x = 256 + (y % 8 == 0 ? 0 : 8); x < 384; x += 16) canvas.drawLine(x, y, x, y+4, p); }
-        p.setColor(android.graphics.Color.rgb(19, 29, 44)); canvas.drawRect(279, 201, 361, 243, p);
-        p.setShader(new android.graphics.LinearGradient(0, 202, 0, 241, android.graphics.Color.rgb(51, 66, 93), android.graphics.Color.rgb(14, 19, 30), android.graphics.Shader.TileMode.CLAMP));
-        canvas.drawRect(281, 203, 359, 241, p); p.setShader(null);
-        p.setColor(android.graphics.Color.rgb(20, 22, 28)); for (int x = 282; x < 359; x += 6) canvas.drawRect(x, 229 - x % 17, x + 5, 241, p);
-        p.setColor(android.graphics.Color.rgb(153, 131, 85)); for (int x=285; x<358; x+=7) canvas.drawRect(x,234,x+1,236,p);
-        p.setColor(android.graphics.Color.rgb(27, 29, 32)); p.setStrokeWidth(2); canvas.drawLine(320, 202, 320, 243, p); canvas.drawLine(280, 221, 360, 221, p);
-        p.setColor(android.graphics.Color.rgb(34, 37, 42)); canvas.drawRect(384,192,512,256,p);
-        p.setColor(android.graphics.Color.rgb(47, 51, 57)); for (int x=387;x<512;x+=32) canvas.drawRoundRect(x,195,x+26,253,3,3,p);
-        int[] pixels = new int[512 * 256]; image.getPixels(pixels, 0, 512, 0, 0, 512, 256); image.recycle();
-        byte[] rgba = new byte[pixels.length * 4];
-        for (int i = 0; i < pixels.length; i++) { int value = pixels[i]; rgba[4*i] = (byte)(value >> 16); rgba[4*i+1] = (byte)(value >> 8); rgba[4*i+2] = (byte)value; rgba[4*i+3] = (byte)(value >> 24); }
-        return rgba;
+    /** Snapshot artwork only: native rendering positions it inside the movie surface. */
+    public byte[] controlsPixels(int hovered, boolean tools, float opacity) {
+        return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, screenStatus,
+            "Pause".equals(playLabel), buffering || statusLabel.startsWith("Preparing"), progressFraction, hovered, tools, opacity);
     }
     public void onXrControlsSubmitted(long epoch) { if (epoch == xrEpoch) controlsSubmitted = true; }
     public boolean hasSubmittedControls() { return controlsSubmitted; }
@@ -169,6 +131,7 @@ public class VrActivity extends Activity {
         try {
             if (playbackGate.canPlay()) { if (!player.isPlaying()) player.start(); }
             else if (player.isPlaying()) player.pause();
+            nativePlaybackStatus(xrEpoch, player.isPlaying() && !buffering);
             if (started) { lastTicks = (long)player.getCurrentPosition() * 10000; report("progress", !player.isPlaying()); }
         } catch (IllegalStateException ignored) {}
     }
@@ -189,11 +152,13 @@ public class VrActivity extends Activity {
             boolean playing = readyToPlay && player.isPlaying();
             playLabel = playing ? "Pause" : "Play";
             progressFraction = duration > 0 ? Math.max(0f, Math.min(1f, (float)position / duration)) : 0f;
-            transportStatus = (buffering ? "Buffering  " : playing ? "Playing  " : "Paused  ") + clock(position) + " / " + clock(duration);
+            transportTime = clock(position) + " / " + clock(duration);
+            statusLabel = !readyToPlay ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
+            nativePlaybackStatus(xrEpoch, playing && !buffering);
         } catch (IllegalStateException ignored) {}
         ui.postDelayed(() -> updateTransport(current), 250);
     }
-    private static String clock(int millis) { int seconds = Math.max(0, millis / 1000); return String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60); }
+    private static String clock(int millis) { int seconds = Math.max(0, millis / 1000); return seconds >= 3600 ? String.format(java.util.Locale.ROOT, "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60) : String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60); }
     private void fail(String message) {
         android.util.Log.e("Jellyfin3D", message);
         failure = message;

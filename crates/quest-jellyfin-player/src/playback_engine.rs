@@ -21,6 +21,34 @@ pub enum PlaybackState {
     Stopped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackTransition {
+    Start,
+    Pause,
+    Resume,
+    Stop,
+}
+
+impl PlaybackState {
+    fn transition(self, transition: PlaybackTransition) -> Option<Self> {
+        match (self, transition) {
+            (Self::Idle, PlaybackTransition::Start) => Some(Self::Playing),
+            (Self::Playing, PlaybackTransition::Pause) => Some(Self::Paused),
+            (Self::Paused, PlaybackTransition::Resume) => Some(Self::Playing),
+            (Self::Playing | Self::Paused, PlaybackTransition::Stop) => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+fn progress_report_due(state: PlaybackState, last_report: Option<Instant>, now: Instant) -> bool {
+    state == PlaybackState::Playing
+        && last_report
+            .is_none_or(|last| now.saturating_duration_since(last) >= PROGRESS_REPORT_INTERVAL)
+}
+
 /// Coordinates hardware video decoding via `xr-video` and session reporting via `jellyfin-client`.
 pub struct PlaybackEngine {
     client: JellyfinClient,
@@ -169,7 +197,7 @@ impl PlaybackEngine {
 
     /// Starts playback, reporting to Jellyfin `/Sessions/Playing`.
     pub async fn play(&mut self) -> Result<()> {
-        if self.state != PlaybackState::Idle {
+        if self.state.transition(PlaybackTransition::Start).is_none() {
             return Err(PlayerError::Playback(
                 "Playback can only start after loading an item".into(),
             ));
@@ -192,7 +220,7 @@ impl PlaybackEngine {
         };
 
         self.client.report_playing(&req).await?;
-        self.state = PlaybackState::Playing;
+        self.state = self.state.transition(PlaybackTransition::Start).unwrap();
         self.last_progress_report = Some(Instant::now());
         Ok(())
     }
@@ -200,11 +228,7 @@ impl PlaybackEngine {
     /// Updates playback position and reports periodic progress at most once every 10 seconds.
     pub async fn update_progress(&mut self, current_ticks: u64) -> Result<()> {
         self.position_ticks = current_ticks;
-        if self.state == PlaybackState::Playing
-            && self
-                .last_progress_report
-                .is_none_or(|last| last.elapsed() >= Duration::from_secs(10))
-        {
+        if progress_report_due(self.state, self.last_progress_report, Instant::now()) {
             if let Some(item) = &self.current_item {
                 let mut req = PlaybackProgressRequest::time_update(
                     item.id.clone(),
@@ -223,9 +247,9 @@ impl PlaybackEngine {
 
     /// Pauses playback and notifies Jellyfin session.
     pub async fn pause(&mut self) -> Result<()> {
-        if self.state != PlaybackState::Playing {
+        let Some(next_state) = self.state.transition(PlaybackTransition::Pause) else {
             return Ok(());
-        }
+        };
 
         if let Some(item) = &self.current_item {
             let req = PlaybackProgressRequest {
@@ -240,15 +264,15 @@ impl PlaybackEngine {
             };
             self.client.report_progress(&req).await?;
         }
-        self.state = PlaybackState::Paused;
+        self.state = next_state;
         Ok(())
     }
 
     /// Resumes playback from paused state.
     pub async fn resume(&mut self) -> Result<()> {
-        if self.state != PlaybackState::Paused {
+        let Some(next_state) = self.state.transition(PlaybackTransition::Resume) else {
             return Ok(());
-        }
+        };
 
         if let Some(item) = &self.current_item {
             let req = PlaybackProgressRequest {
@@ -263,15 +287,15 @@ impl PlaybackEngine {
             };
             self.client.report_progress(&req).await?;
         }
-        self.state = PlaybackState::Playing;
+        self.state = next_state;
         Ok(())
     }
 
     /// Stops playback, notifies Jellyfin `/Sessions/Playing/Stopped`, and flushes the decoder.
     pub async fn stop(&mut self) -> Result<()> {
-        if !matches!(self.state, PlaybackState::Playing | PlaybackState::Paused) {
+        let Some(next_state) = self.state.transition(PlaybackTransition::Stop) else {
             return Ok(());
-        }
+        };
         if let Some(item) = &self.current_item {
             let mut req = PlaybackStopRequest::new(
                 item.id.clone(),
@@ -283,7 +307,7 @@ impl PlaybackEngine {
         }
 
         self.decoder.flush()?;
-        self.state = PlaybackState::Stopped;
+        self.state = next_state;
         Ok(())
     }
 
@@ -308,5 +332,71 @@ impl PlaybackEngine {
     /// Returns telemetry statistics from the hardware decoder.
     pub fn decoder_stats(&self) -> DecoderStats {
         self.decoder.stats()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_state_transitions_follow_session_lifecycle() {
+        assert_eq!(
+            PlaybackState::Idle.transition(PlaybackTransition::Start),
+            Some(PlaybackState::Playing)
+        );
+        assert_eq!(
+            PlaybackState::Playing.transition(PlaybackTransition::Pause),
+            Some(PlaybackState::Paused)
+        );
+        assert_eq!(
+            PlaybackState::Paused.transition(PlaybackTransition::Resume),
+            Some(PlaybackState::Playing)
+        );
+        assert_eq!(
+            PlaybackState::Playing.transition(PlaybackTransition::Stop),
+            Some(PlaybackState::Stopped)
+        );
+        assert_eq!(
+            PlaybackState::Paused.transition(PlaybackTransition::Stop),
+            Some(PlaybackState::Stopped)
+        );
+    }
+
+    #[test]
+    fn playback_state_transitions_reject_invalid_commands() {
+        for state in [PlaybackState::Idle, PlaybackState::Stopped] {
+            assert_eq!(state.transition(PlaybackTransition::Pause), None);
+            assert_eq!(state.transition(PlaybackTransition::Resume), None);
+            assert_eq!(state.transition(PlaybackTransition::Stop), None);
+        }
+        assert_eq!(
+            PlaybackState::Playing.transition(PlaybackTransition::Start),
+            None
+        );
+        assert_eq!(
+            PlaybackState::Paused.transition(PlaybackTransition::Start),
+            None
+        );
+        assert_eq!(
+            PlaybackState::Stopped.transition(PlaybackTransition::Start),
+            None
+        );
+    }
+
+    #[test]
+    fn progress_reports_are_limited_to_playing_sessions_and_ten_second_intervals() {
+        let now = Instant::now();
+        let last = now - PROGRESS_REPORT_INTERVAL;
+
+        assert!(progress_report_due(PlaybackState::Playing, None, now));
+        assert!(!progress_report_due(
+            PlaybackState::Playing,
+            Some(now - Duration::from_millis(9_999)),
+            now
+        ));
+        assert!(progress_report_due(PlaybackState::Playing, Some(last), now));
+        assert!(!progress_report_due(PlaybackState::Paused, None, now));
+        assert!(!progress_report_due(PlaybackState::Idle, Some(last), now));
     }
 }

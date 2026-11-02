@@ -1,5 +1,18 @@
 //! Track actual decoded dimensions before changing an OpenXR surface.
-use quest_jellyfin_player::{build_stereo_eye_layer_specs, EyeOrder, StereoFormat};
+use quest_jellyfin_player::{
+    build_stereo_eye_layer_specs, calculate_display_aspect_ratio, EyeOrder, StereoFormat,
+};
+
+/// Computes the flat screen dimensions used by the immersive renderer.
+pub fn immersive_quad_size(
+    screen_width: f32,
+    format: StereoFormat,
+    video_width: u32,
+    video_height: u32,
+) -> (f32, f32) {
+    let aspect = calculate_display_aspect_ratio(format, video_width, video_height);
+    (screen_width, screen_width / aspect)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurfaceSize {
@@ -69,6 +82,22 @@ mod tests {
     fn rejects_empty_and_overflowing_mono_frames() {
         for (w, h) in [(0, 720), (1280, 0), (u32::MAX, 10)] {
             assert!(SurfaceSize::new(w, h, StereoFormat::Mono, EyeOrder::LeftRight).is_err());
+        }
+    }
+
+    #[test]
+    fn computes_immersive_quad_size_from_stereo_display_aspect() {
+        let width = 4.0;
+        for (format, video_width, video_height) in [
+            (StereoFormat::HalfSideBySide, 1920, 1080),
+            (StereoFormat::FullSideBySide, 3840, 1080),
+            (StereoFormat::HalfOverUnder, 1920, 1080),
+            (StereoFormat::FullOverUnder, 1920, 2160),
+        ] {
+            let (actual_width, actual_height) =
+                immersive_quad_size(width, format, video_width, video_height);
+            assert_eq!(actual_width, width);
+            assert!((actual_height - 2.25).abs() < 1e-4, "{format:?}");
         }
     }
 }

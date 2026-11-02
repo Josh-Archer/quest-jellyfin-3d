@@ -1,37 +1,50 @@
 name: CI
 on:
   push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
 jobs:
   check:
     # ARC scale set from Josh-Archer/home PR #3956.
-    runs-on: home-gh-runner-quest-jellyfin-3d
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev || true
-      - uses: actions/setup-java@v5
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
-      - name: Verify questkit crates are consumed as registry dependencies
-        # They must be versioned dependencies, never workspace members or path copies, and the
-        # Android packaging harness must resolve from the resolved xr-core package.
+      - name: Verify questkit crates are consumed from crates.io
+        # They must be versioned registry dependencies, never workspace members, path copies or git
+        # pins, and the Android packaging harness must resolve from the resolved xr-core package.
         run: |
           set -euo pipefail
-          cargo metadata --format-version 1 --locked > /tmp/metadata.json
-          python3 - <<'PY'
-          import json, os
-          d = json.load(open("/tmp/metadata.json"))
+          cargo metadata --format-version 1 --locked > "$RUNNER_TEMP/metadata.json"
+          python3 - "$RUNNER_TEMP/metadata.json" <<'PY'
+          import json, os, sys
+          d = json.load(open(sys.argv[1]))
           members = set(d["workspace_members"])
           for name in ("xr-core", "xr-video", "jellyfin-client"):
               pkg = next(p for p in d["packages"] if p["name"] == name)
               assert pkg["id"] not in members, f"{name} must not be a workspace member"
               src = pkg["source"] or ""
-              assert src.startswith(("registry+", "git+")), f"{name} resolved from {src!r}"
+              assert src.startswith("registry+"), f"{name} resolved from {src!r}, expected crates.io"
               print(name, pkg["version"], src)
               if name == "xr-core":
                   assert os.path.isfile(os.path.join(os.path.dirname(pkg["manifest_path"]), "android", "build.sh"))
