@@ -27,9 +27,3 @@ wiremock = "0.6"
 xr-core = "0.1"
 xr-video = "0.1"
 jellyfin-client = "0.1"
-
-# Until questkit 0.1.0 is published to crates.io, resolve it from git; delete this section afterwards.
-[patch.crates-io]
-xr-core = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }
-xr-video = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }
-jellyfin-client = { git = "https://github.com/Josh-Archer/questkit", rev = "bac1d5c15e77e6f994c87f89284cfc450b68f7a1" }

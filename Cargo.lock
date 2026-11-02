@@ -601,7 +601,8 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jellyfin-client"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/questkit?rev=bac1d5c15e77e6f994c87f89284cfc450b68f7a1#bac1d5c15e77e6f994c87f89284cfc450b68f7a1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28fe2fa7094a683f7a063ad8379ce9688a6b7dd0c71eee921ac05882cc97c85"
 dependencies = [
  "parking_lot",
  "reqwest",
@@ -1919,7 +1920,8 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xr-core"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/questkit?rev=bac1d5c15e77e6f994c87f89284cfc450b68f7a1#bac1d5c15e77e6f994c87f89284cfc450b68f7a1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dc6f5cb10b92ecd1b5fa7b70127f75b42afe5ab0987e014668040706d7c7436"
 dependencies = [
  "ash",
  "libc",
@@ -1937,7 +1939,8 @@ dependencies = [
 [[package]]
 name = "xr-video"
 version = "0.1.0"
-source = "git+https://github.com/Josh-Archer/questkit?rev=bac1d5c15e77e6f994c87f89284cfc450b68f7a1#bac1d5c15e77e6f994c87f89284cfc450b68f7a1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4320ccc424c4b7102fd7b1c7d7f68797704b7ed04c6ef622e2cb2a9f960bff6"
 dependencies = [
  "ash",
  "audiopus",
