@@ -145,20 +145,7 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                 .get_string(&order)
                 .map_err(|_| "Invalid eye order")?
                 .into();
-            let format = match format.as_str() {
-                "Mono" => StereoFormat::Mono,
-                "HalfSideBySide" => StereoFormat::HalfSideBySide,
-                "FullSideBySide" => StereoFormat::FullSideBySide,
-                "HalfOverUnder" => StereoFormat::HalfOverUnder,
-                "FullOverUnder" => StereoFormat::FullOverUnder,
-                _ => return Err("This stereo format is not supported yet".into()),
-            };
-            let order = match order.as_str() {
-                "RightLeft" => EyeOrder::RightLeft,
-                "TopBottom" => EyeOrder::TopBottom,
-                "BottomTop" => EyeOrder::BottomTop,
-                _ => EyeOrder::LeftRight,
-            };
+            let (format, order) = crate::surface_size::parse_immersive_stereo(&format, &order)?;
             let (width, height) = (
                 u32::try_from(width).map_err(|_| "Invalid video width")?,
                 u32::try_from(height).map_err(|_| "Invalid video height")?,
@@ -242,13 +229,15 @@ fn run_xr(
         screen_distance,
         epoch,
     } = playback;
-    let config = XrConfig {
-        application_name: "Jellyfin 3D".into(),
-        stream_width: width,
-        stream_height: height,
-        enable_passthrough: passthrough,
-        enable_hud: true,
+    let mut screen = VirtualScreenConfig {
+        environment: quest_jellyfin_player::VirtualScreenEnvironment::from_passthrough(passthrough),
+        screen_width_m: screen_width,
+        distance_m: screen_distance,
         ..Default::default()
+    };
+    let config = XrConfig {
+        enable_hud: true,
+        ..screen.to_xr_config("Jellyfin 3D", width, height)
     };
     diagnostic("XR initializing");
     let mut vulkan = VulkanContext::new_simulated();
@@ -270,15 +259,11 @@ fn run_xr(
             .map_err(|_| "Invalid environment")?;
     let mut loft_anchor = None;
     let mut surface_started = false;
-    let mut screen = VirtualScreenConfig {
-        screen_width_m: screen_width,
-        distance_m: screen_distance,
-        ..Default::default()
-    };
     let mut transform = ScreenTransform {
         position: Vec3::new(0.0, 0.0, -screen_distance),
         orientation: Quat::IDENTITY,
         quad_size: crate::surface_size::immersive_quad_size(screen_width, format, width, height),
+        aspect_ratio: quest_jellyfin_player::calculate_display_aspect_ratio(format, width, height),
         distance: screen_distance,
         display_mode: xr_core::DisplayMode::FlatQuad,
         ..Default::default()
@@ -731,9 +716,11 @@ fn run_xr(
                     }
                 }
             }
-            let pt_layer = xr
-                .passthrough()
-                .passthrough_layer()
+            let pt_layer = screen
+                .environment
+                .uses_passthrough()
+                .then(|| xr.passthrough().passthrough_layer())
+                .flatten()
                 .filter(|_| xr.is_passthrough_enabled())
                 .map(xr_core::build_passthrough_layer::<openxr::Vulkan>);
             let mut refs: Vec<&openxr::CompositionLayerBase<'_, openxr::Vulkan>> = Vec::new();
