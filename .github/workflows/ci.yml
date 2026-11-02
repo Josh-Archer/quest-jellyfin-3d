@@ -2,7 +2,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,8 +33,11 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev || true
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libvulkan-dev
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
