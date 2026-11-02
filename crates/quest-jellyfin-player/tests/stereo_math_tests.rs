@@ -1,6 +1,6 @@
 use quest_jellyfin_player::{
-    calculate_display_aspect_ratio, calculate_eye_pixel_rect, calculate_eye_uv, Eye,
-    NormalizedUvRect, StereoPixelRect,
+    aspect_correction_scale, calculate_display_aspect_ratio, calculate_eye_pixel_rect,
+    calculate_eye_uv, calculate_eye_uv_crop, Eye, EyeUvCrop, NormalizedUvRect, StereoPixelRect,
 };
 use quest_jellyfin_player::{EyeOrder, StereoFormat};
 
@@ -371,7 +371,7 @@ fn test_odd_dimensions_rejection() {
     );
     assert!(ou_odd.is_err());
 
-    // Zero dimensions
+    // Zero and overflowing dimensions
     assert!(
         calculate_eye_pixel_rect(StereoFormat::Mono, EyeOrder::LeftRight, Eye::Left, 0, 1080)
             .is_err()
@@ -380,6 +380,98 @@ fn test_odd_dimensions_rejection() {
         calculate_eye_pixel_rect(StereoFormat::Mono, EyeOrder::LeftRight, Eye::Left, 1920, 0)
             .is_err()
     );
+    assert!(calculate_eye_pixel_rect(
+        StereoFormat::Mono,
+        EyeOrder::LeftRight,
+        Eye::Left,
+        u32::MAX,
+        1080
+    )
+    .is_err());
+}
+
+#[test]
+fn test_uv_crop_scale_affine_mapping_and_aspect_factors() {
+    for (format, order, expected_left, expected_right) in [
+        (
+            StereoFormat::Mono,
+            EyeOrder::LeftRight,
+            EyeUvCrop::FULL_FRAME,
+            EyeUvCrop::FULL_FRAME,
+        ),
+        (
+            StereoFormat::HalfSideBySide,
+            EyeOrder::LeftRight,
+            EyeUvCrop {
+                offset: (0.0, 0.0),
+                scale: (0.5, 1.0),
+                aspect_scale: (2.0, 1.0),
+            },
+            EyeUvCrop {
+                offset: (0.5, 0.0),
+                scale: (0.5, 1.0),
+                aspect_scale: (2.0, 1.0),
+            },
+        ),
+        (
+            StereoFormat::FullSideBySide,
+            EyeOrder::RightLeft,
+            EyeUvCrop {
+                offset: (0.5, 0.0),
+                scale: (0.5, 1.0),
+                aspect_scale: (1.0, 1.0),
+            },
+            EyeUvCrop {
+                offset: (0.0, 0.0),
+                scale: (0.5, 1.0),
+                aspect_scale: (1.0, 1.0),
+            },
+        ),
+        (
+            StereoFormat::HalfOverUnder,
+            EyeOrder::TopBottom,
+            EyeUvCrop {
+                offset: (0.0, 0.0),
+                scale: (1.0, 0.5),
+                aspect_scale: (1.0, 2.0),
+            },
+            EyeUvCrop {
+                offset: (0.0, 0.5),
+                scale: (1.0, 0.5),
+                aspect_scale: (1.0, 2.0),
+            },
+        ),
+        (
+            StereoFormat::FullOverUnder,
+            EyeOrder::BottomTop,
+            EyeUvCrop {
+                offset: (0.0, 0.5),
+                scale: (1.0, 0.5),
+                aspect_scale: (1.0, 1.0),
+            },
+            EyeUvCrop {
+                offset: (0.0, 0.0),
+                scale: (1.0, 0.5),
+                aspect_scale: (1.0, 1.0),
+            },
+        ),
+    ] {
+        let left = calculate_eye_uv_crop(format, order, Eye::Left);
+        let right = calculate_eye_uv_crop(format, order, Eye::Right);
+        assert_eq!(left, expected_left, "{format:?} {order:?} left");
+        assert_eq!(right, expected_right, "{format:?} {order:?} right");
+        assert_eq!(aspect_correction_scale(format), left.aspect_scale);
+
+        let left_rect = left.to_uv_rect();
+        assert_eq!(
+            left_rect.apply(0.0, 0.0),
+            (left_rect.u_min, left_rect.v_min)
+        );
+        assert_eq!(
+            left_rect.apply(1.0, 1.0),
+            (left_rect.u_max, left_rect.v_max)
+        );
+    }
 }
 
 #[test]

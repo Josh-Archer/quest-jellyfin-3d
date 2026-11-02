@@ -3,6 +3,35 @@ use quest_jellyfin_player::{
     build_stereo_eye_layer_specs, calculate_display_aspect_ratio, EyeOrder, StereoFormat,
 };
 
+/// Parses JNI stereo format and eye-order strings for immersive playback.
+///
+/// Missing/empty format strings fall back to `StereoFormat::Mono`. Unrecognized eye orders
+/// fall back to the format's natural default (`TopBottom` for OU, `LeftRight` otherwise).
+pub fn parse_immersive_stereo(
+    format: &str,
+    order: &str,
+) -> Result<(StereoFormat, EyeOrder), &'static str> {
+    let format = match format.trim() {
+        "" | "Mono" => StereoFormat::Mono,
+        "HalfSideBySide" => StereoFormat::HalfSideBySide,
+        "FullSideBySide" => StereoFormat::FullSideBySide,
+        "HalfOverUnder" => StereoFormat::HalfOverUnder,
+        "FullOverUnder" => StereoFormat::FullOverUnder,
+        _ => return Err("This stereo format is not supported yet"),
+    };
+    let order = match format {
+        StereoFormat::HalfOverUnder | StereoFormat::FullOverUnder => match order.trim() {
+            "BottomTop" => EyeOrder::BottomTop,
+            _ => EyeOrder::TopBottom,
+        },
+        _ => match order.trim() {
+            "RightLeft" => EyeOrder::RightLeft,
+            _ => EyeOrder::LeftRight,
+        },
+    };
+    Ok((format, order))
+}
+
 /// Computes the flat screen dimensions used by the immersive renderer.
 pub fn immersive_quad_size(
     screen_width: f32,
@@ -89,6 +118,7 @@ mod tests {
     fn computes_immersive_quad_size_from_stereo_display_aspect() {
         let width = 4.0;
         for (format, video_width, video_height) in [
+            (StereoFormat::Mono, 1920, 1080),
             (StereoFormat::HalfSideBySide, 1920, 1080),
             (StereoFormat::FullSideBySide, 3840, 1080),
             (StereoFormat::HalfOverUnder, 1920, 1080),
@@ -98,6 +128,37 @@ mod tests {
                 immersive_quad_size(width, format, video_width, video_height);
             assert_eq!(actual_width, width);
             assert!((actual_height - 2.25).abs() < 1e-4, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn parses_immersive_stereo_with_mono_fallback_and_packing_default_orders() {
+        assert_eq!(
+            parse_immersive_stereo("", ""),
+            Ok((StereoFormat::Mono, EyeOrder::LeftRight))
+        );
+        assert_eq!(
+            parse_immersive_stereo("Mono", ""),
+            Ok((StereoFormat::Mono, EyeOrder::LeftRight))
+        );
+        assert_eq!(
+            parse_immersive_stereo("HalfSideBySide", "RightLeft"),
+            Ok((StereoFormat::HalfSideBySide, EyeOrder::RightLeft))
+        );
+        assert_eq!(
+            parse_immersive_stereo("HalfOverUnder", ""),
+            Ok((StereoFormat::HalfOverUnder, EyeOrder::TopBottom))
+        );
+        assert_eq!(
+            parse_immersive_stereo("FullOverUnder", "LeftRight"),
+            Ok((StereoFormat::FullOverUnder, EyeOrder::TopBottom))
+        );
+        assert_eq!(
+            parse_immersive_stereo("FullOverUnder", "BottomTop"),
+            Ok((StereoFormat::FullOverUnder, EyeOrder::BottomTop))
+        );
+        for unsupported in ["Mvc", "MvHevc", "Unspecified3d", "Unknown"] {
+            assert!(parse_immersive_stereo(unsupported, "").is_err());
         }
     }
 }

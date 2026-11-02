@@ -1,7 +1,8 @@
-use openxr::EyeVisibility;
+use jellyfin_client::{BaseItem, Video3DFormat};
+use openxr::{EnvironmentBlendMode, EyeVisibility};
 use quest_jellyfin_player::{
-    build_stereo_eye_layer_specs, StereoPixelRect, VirtualScreenConfig, VirtualScreenEnvironment,
-    VirtualScreenShape,
+    build_stereo_eye_layer_specs, detect_item_format, plan_stereo_virtual_screen, StereoPixelRect,
+    VirtualScreenConfig, VirtualScreenEnvironment, VirtualScreenShape,
 };
 use quest_jellyfin_player::{EyeOrder, StereoFormat};
 
@@ -143,7 +144,7 @@ fn test_stereo_layer_specs_generation() {
         }
     );
 
-    // 5. Mono
+    // 5. Mono falls back to a single layer visible to both eyes, while rejecting invalid bounds
     let mono_specs =
         build_stereo_eye_layer_specs(StereoFormat::Mono, EyeOrder::LeftRight, 1920, 1080).unwrap();
     assert_eq!(mono_specs.len(), 1);
@@ -157,4 +158,113 @@ fn test_stereo_layer_specs_generation() {
             height: 1080
         }
     );
+    assert!(
+        build_stereo_eye_layer_specs(StereoFormat::Mono, EyeOrder::LeftRight, 0, 1080).is_err()
+    );
+    assert!(
+        build_stereo_eye_layer_specs(StereoFormat::Mono, EyeOrder::LeftRight, u32::MAX, 1080)
+            .is_err()
+    );
+}
+
+#[test]
+fn test_detected_format_plans_stereo_screen_and_backdrop_modes() {
+    let eps = 1e-4;
+    let passthrough_cfg = VirtualScreenConfig {
+        environment: VirtualScreenEnvironment::Passthrough,
+        shape: VirtualScreenShape::CurvedCylinder,
+        screen_width_m: 4.0,
+        ..Default::default()
+    };
+    let dark_room_cfg = VirtualScreenConfig {
+        environment: VirtualScreenEnvironment::DarkRoom,
+        shape: VirtualScreenShape::FlatQuad,
+        screen_width_m: 4.0,
+        ..Default::default()
+    };
+
+    assert!(
+        passthrough_cfg
+            .to_xr_config("Jellyfin 3D", 1920, 1080)
+            .enable_passthrough
+    );
+    assert!(
+        !dark_room_cfg
+            .to_xr_config("Jellyfin 3D", 1920, 1080)
+            .enable_passthrough
+    );
+
+    // Half SBS item from Jellyfin metadata -> 2 eyes, 2x horizontal aspect correction -> 16:9 screen
+    let hsbs_item = BaseItem {
+        video_3d_format: Some(Video3DFormat::HalfSideBySide),
+        path: Some("/media/Avatar.HSBS.1080p.mkv".into()),
+        ..Default::default()
+    };
+    let hsbs = plan_stereo_virtual_screen(
+        detect_item_format(&hsbs_item),
+        1920,
+        1080,
+        &passthrough_cfg,
+        true,
+    )
+    .unwrap();
+    assert_eq!(hsbs.eye_layers.len(), 2);
+    assert_eq!(hsbs.eye_uv_crops.0.offset, (0.0, 0.0));
+    assert_eq!(hsbs.eye_uv_crops.0.scale, (0.5, 1.0));
+    assert_eq!(hsbs.eye_uv_crops.0.aspect_scale, (2.0, 1.0));
+    assert_eq!(hsbs.eye_uv_crops.1.offset, (0.5, 0.0));
+    assert!((hsbs.quad_size_m.1 - 2.25).abs() < eps);
+    assert_eq!(hsbs.blend_mode, EnvironmentBlendMode::ALPHA_BLEND);
+    assert!(hsbs.submit_passthrough_layer);
+
+    // Passthrough on a runtime without alpha-blend falls back to OPAQUE blend mode
+    let hsbs_no_alpha = plan_stereo_virtual_screen(
+        detect_item_format(&hsbs_item),
+        1920,
+        1080,
+        &passthrough_cfg,
+        false,
+    )
+    .unwrap();
+    assert_eq!(hsbs_no_alpha.blend_mode, EnvironmentBlendMode::OPAQUE);
+
+    // Half OU item with reversed BT filename tag in dark room -> 2x vertical aspect correction, OPAQUE backdrop
+    let hou_item = BaseItem {
+        video_3d_format: Some(Video3DFormat::HalfTopAndBottom),
+        path: Some("/media/Coraline_BT.mkv".into()),
+        ..Default::default()
+    };
+    let hou = plan_stereo_virtual_screen(
+        detect_item_format(&hou_item),
+        1920,
+        1080,
+        &dark_room_cfg,
+        true,
+    )
+    .unwrap();
+    assert_eq!(hou.eye_layers.len(), 2);
+    assert_eq!(hou.eye_uv_crops.0.offset, (0.0, 0.5));
+    assert_eq!(hou.eye_uv_crops.1.offset, (0.0, 0.0));
+    assert_eq!(hou.eye_uv_crops.0.aspect_scale, (1.0, 2.0));
+    assert!((hou.quad_size_m.1 - 2.25).abs() < eps);
+    assert_eq!(hou.blend_mode, EnvironmentBlendMode::OPAQUE);
+    assert!(!hou.submit_passthrough_layer);
+
+    // Plain 2D movie -> mono fallback to BOTH eyes in dark room
+    let mono_item = BaseItem {
+        path: Some("/media/Arrival (2016) 1080p.mkv".into()),
+        ..Default::default()
+    };
+    let mono = plan_stereo_virtual_screen(
+        detect_item_format(&mono_item),
+        1920,
+        1080,
+        &dark_room_cfg,
+        true,
+    )
+    .unwrap();
+    assert_eq!(mono.eye_layers.len(), 1);
+    assert_eq!(mono.eye_layers[0].eye_visibility, EyeVisibility::BOTH);
+    assert_eq!(mono.eye_uv_crops.0.scale, (1.0, 1.0));
+    assert_eq!(mono.eye_uv_crops.1.scale, (1.0, 1.0));
 }

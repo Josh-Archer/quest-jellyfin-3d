@@ -1,17 +1,18 @@
 //! Virtual screen placement, environment mode (passthrough vs dark room), and OpenXR stereo layers.
 
 use crate::error::Result;
-use crate::format::{EyeOrder, StereoFormat};
+use crate::format::{DetectedStereoFormat, EyeOrder, StereoFormat};
 use crate::stereo::{
-    calculate_display_aspect_ratio, calculate_eye_pixel_rect, Eye, StereoPixelRect,
+    calculate_display_aspect_ratio, calculate_eye_pixel_rect, calculate_eye_uv_crop,
+    is_packed_stereo, Eye, EyeUvCrop, StereoPixelRect,
 };
 use openxr::{
-    CompositionLayerCylinderKHR, CompositionLayerFlags, CompositionLayerQuad, Extent2Df, Extent2Di,
-    EyeVisibility, Graphics, Offset2Di, Posef, Quaternionf, Rect2Di, Space, Swapchain,
-    SwapchainSubImage, Vector3f,
+    CompositionLayerCylinderKHR, CompositionLayerFlags, CompositionLayerQuad, EnvironmentBlendMode,
+    Extent2Df, Extent2Di, EyeVisibility, Graphics, Offset2Di, Posef, Quaternionf, Rect2Di, Space,
+    Swapchain, SwapchainSubImage, Vector3f,
 };
 use serde::{Deserialize, Serialize};
-use xr_core::DesktopLayerConfig;
+use xr_core::{DesktopLayerConfig, XrConfig};
 
 /// Virtual environment viewing mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -21,6 +22,32 @@ pub enum VirtualScreenEnvironment {
     Passthrough,
     /// Dark Room mode: complete blackout / dark void for theatrical viewing experience.
     DarkRoom,
+}
+
+impl VirtualScreenEnvironment {
+    /// Maps a boolean passthrough preference to [`VirtualScreenEnvironment`].
+    pub const fn from_passthrough(passthrough: bool) -> Self {
+        if passthrough {
+            Self::Passthrough
+        } else {
+            Self::DarkRoom
+        }
+    }
+
+    /// Whether the OpenXR passthrough reconstruction backdrop is active.
+    pub const fn uses_passthrough(self) -> bool {
+        matches!(self, Self::Passthrough)
+    }
+
+    /// Selects the OpenXR environment blend mode (`ALPHA_BLEND` for passthrough when supported,
+    /// falling back to `OPAQUE` for dark room or runtimes without alpha-blend support).
+    pub const fn blend_mode(self, alpha_blend_supported: bool) -> EnvironmentBlendMode {
+        if self.uses_passthrough() && alpha_blend_supported {
+            EnvironmentBlendMode::ALPHA_BLEND
+        } else {
+            EnvironmentBlendMode::OPAQUE
+        }
+    }
 }
 
 /// Geometry shape of the virtual screen.
@@ -66,7 +93,7 @@ impl Default for VirtualScreenConfig {
 impl VirtualScreenConfig {
     /// Computes the physical screen height in meters based on the display aspect ratio.
     pub fn compute_screen_height_m(&self, display_aspect_ratio: f32) -> f32 {
-        if display_aspect_ratio <= 0.0 {
+        if !display_aspect_ratio.is_finite() || display_aspect_ratio <= 0.0 {
             self.screen_width_m / (16.0 / 9.0)
         } else {
             self.screen_width_m / display_aspect_ratio
@@ -98,6 +125,37 @@ impl VirtualScreenConfig {
             }),
         }
     }
+
+    /// Builds an [`XrConfig`] wired for this screen's passthrough or dark-room environment.
+    pub fn to_xr_config(
+        &self,
+        application_name: impl Into<std::borrow::Cow<'static, str>>,
+        stream_width: u32,
+        stream_height: u32,
+    ) -> XrConfig {
+        let mode = match self.shape {
+            VirtualScreenShape::FlatQuad => xr_core::DisplayMode::FlatQuad,
+            VirtualScreenShape::CurvedCylinder => xr_core::DisplayMode::CurvedCylinder,
+        };
+        let aspect = if stream_width > 0 && stream_height > 0 {
+            stream_width as f32 / stream_height as f32
+        } else {
+            16.0 / 9.0
+        };
+        XrConfig {
+            application_name: application_name.into(),
+            stream_width,
+            stream_height,
+            display_mode: mode,
+            quad_size: (self.screen_width_m, self.compute_screen_height_m(aspect)),
+            quad_distance: self.distance_m,
+            cylinder_radius: self.distance_m,
+            cylinder_central_angle: self.cylinder_arc_rad,
+            cylinder_aspect_ratio: aspect,
+            enable_passthrough: self.environment.uses_passthrough(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Specifications for an individual eye's composition layer.
@@ -107,6 +165,54 @@ pub struct EyeLayerSpec {
     pub sub_image_rect: StereoPixelRect,
 }
 
+/// Host-testable stereo virtual screen layout derived from a [`DetectedStereoFormat`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct StereoScreenPlan {
+    /// Composition layer visibility and pixel sub-image rectangle(s) (1 for mono, 2 for SBS/OU).
+    pub eye_layers: Vec<EyeLayerSpec>,
+    /// Per-eye normalized UV crop/scale and aspect correction `(left_eye, right_eye)`.
+    pub eye_uv_crops: (EyeUvCrop, EyeUvCrop),
+    /// Aspect-corrected physical display aspect ratio (`width / height`).
+    pub display_aspect_ratio: f32,
+    /// Physical flat-quad dimensions `(width_m, height_m)` on the virtual screen.
+    pub quad_size_m: (f32, f32),
+    /// Environment blend mode (`ALPHA_BLEND` for passthrough when supported, `OPAQUE` for dark room).
+    pub blend_mode: EnvironmentBlendMode,
+    /// Whether the passthrough reconstruction layer should be submitted behind the video layers.
+    pub submit_passthrough_layer: bool,
+}
+
+/// Plans per-eye UV crop/scale, aspect-corrected virtual screen geometry, and passthrough/dark-room
+/// backdrop from a [`DetectedStereoFormat`].
+pub fn plan_stereo_virtual_screen(
+    detected: DetectedStereoFormat,
+    texture_width: u32,
+    texture_height: u32,
+    config: &VirtualScreenConfig,
+    alpha_blend_supported: bool,
+) -> Result<StereoScreenPlan> {
+    let eye_layers = build_stereo_eye_layer_specs(
+        detected.format,
+        detected.eye_order,
+        texture_width,
+        texture_height,
+    )?;
+    let left_uv = calculate_eye_uv_crop(detected.format, detected.eye_order, Eye::Left);
+    let right_uv = calculate_eye_uv_crop(detected.format, detected.eye_order, Eye::Right);
+    let display_aspect_ratio =
+        calculate_display_aspect_ratio(detected.format, texture_width, texture_height);
+    let height_m = config.compute_screen_height_m(display_aspect_ratio);
+
+    Ok(StereoScreenPlan {
+        eye_layers,
+        eye_uv_crops: (left_uv, right_uv),
+        display_aspect_ratio,
+        quad_size_m: (config.screen_width_m, height_m),
+        blend_mode: config.environment.blend_mode(alpha_blend_supported),
+        submit_passthrough_layer: config.environment.uses_passthrough(),
+    })
+}
+
 /// Computes the composition layer specifications for left and right eyes based on stereo layout.
 pub fn build_stereo_eye_layer_specs(
     format: StereoFormat,
@@ -114,14 +220,15 @@ pub fn build_stereo_eye_layer_specs(
     texture_width: u32,
     texture_height: u32,
 ) -> Result<Vec<EyeLayerSpec>> {
-    if matches!(format, StereoFormat::Mono | StereoFormat::Unspecified3d) {
-        // Mono 2D video uses a single layer visible to both eyes
-        let full_rect = StereoPixelRect {
-            x: 0,
-            y: 0,
-            width: texture_width,
-            height: texture_height,
-        };
+    if !is_packed_stereo(format) {
+        // Mono (and any unpacked fallback) validates dimensions and uses a single layer visible to both eyes.
+        let full_rect = calculate_eye_pixel_rect(
+            StereoFormat::Mono,
+            eye_order,
+            Eye::Left,
+            texture_width,
+            texture_height,
+        )?;
         return Ok(vec![EyeLayerSpec {
             eye_visibility: EyeVisibility::BOTH,
             sub_image_rect: full_rect,
