@@ -7,6 +7,8 @@ use jellyfin_client::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::playback_profile::{evaluate_direct_play, quest_device_profile};
+
 fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
     v.get(key)
         .and_then(Value::as_str)
@@ -177,23 +179,82 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .as_u64()
                 .map(|n| n.clamp(4_000_000, 120_000_000));
             let allow_transcoding = v["allow_transcoding"].as_bool().unwrap_or(true);
+            let profile = quest_device_profile();
             let info = client
-                .playback_info_with_policy(id, None, max_bitrate, allow_transcoding)
+                .playback_info_with_policy(
+                    id,
+                    Some(profile.clone()),
+                    max_bitrate,
+                    allow_transcoding,
+                )
                 .await
                 .map_err(|e| e.to_string())?;
             if let Some(err) = info.error_code {
                 return Err(format!("Jellyfin rejected playback: {err}"));
             }
-            let resolved = jellyfin_client::resolve_playback(client.base_url(), id, &info)
+            let mut resolved = jellyfin_client::resolve_playback(client.base_url(), id, &info)
                 .map_err(|e| e.to_string())?;
+            let mut reason = match resolved.method {
+                jellyfin_client::PlayMethod::DirectPlay => {
+                    "Jellyfin confirmed this source supports direct play".to_owned()
+                }
+                jellyfin_client::PlayMethod::DirectStream => {
+                    "Jellyfin selected direct stream for this source".to_owned()
+                }
+                jellyfin_client::PlayMethod::Transcode => {
+                    "Jellyfin selected transcoding because direct play is unavailable".to_owned()
+                }
+            };
             if !allow_transcoding && resolved.method == jellyfin_client::PlayMethod::Transcode {
                 return Err("This source requires server transcoding. Enable it in Playback settings or choose another source.".into());
             }
-            let source = info
+            let mut source = info
                 .media_sources
                 .iter()
                 .find(|s| s.id == resolved.source_id)
+                .cloned()
                 .ok_or("Selected source missing")?;
+            let mut source_item = item.clone();
+            if !source.media_streams.is_empty() {
+                source_item.media_streams = source.media_streams.clone();
+            }
+            if let Some(path) = &source.path {
+                source_item.path = Some(path.clone());
+            }
+            let decision = evaluate_direct_play(&profile, &source_item);
+            if let jellyfin_client::DirectPlayDecision::TranscodeRequired { reason: cap_reason } =
+                decision
+            {
+                let quest_decode_cap = cap_reason.contains("hardware cap")
+                    || cap_reason.contains("exceeds Quest 3 8K limit")
+                    || cap_reason.contains("H.264 resolution");
+                if quest_decode_cap && resolved.method != jellyfin_client::PlayMethod::Transcode {
+                    let mut fallback_info = info.clone();
+                    let fallback_source = fallback_info
+                        .media_sources
+                        .iter_mut()
+                        .find(|candidate| candidate.id == source.id)
+                        .ok_or("Selected source missing")?;
+                    fallback_source.supports_direct_play = false;
+                    fallback_source.supports_direct_stream = false;
+                    let fallback_source_id = fallback_source.id.clone();
+                    resolved =
+                        jellyfin_client::resolve_playback(client.base_url(), id, &fallback_info)
+                            .map_err(|e| e.to_string())?;
+                    if resolved.method != jellyfin_client::PlayMethod::Transcode {
+                        return Err("Quest 3 playback limits require a server transcode, but Jellyfin did not provide one".into());
+                    }
+                    source = fallback_info
+                        .media_sources
+                        .iter()
+                        .find(|candidate| candidate.id == fallback_source_id)
+                        .cloned()
+                        .ok_or("Selected source missing")?;
+                }
+                if quest_decode_cap {
+                    reason = cap_reason;
+                }
+            }
             let url = &resolved.url;
             let token = client.access_token().ok_or("Not signed in")?;
             let authorization =
@@ -211,20 +272,13 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 });
             let width = stream.and_then(|s| s.width).filter(|v| *v > 0);
             let height = stream.and_then(|s| s.height).filter(|v| *v > 0);
-            let mut source_item = item.clone();
-            if !source.media_streams.is_empty() {
-                source_item.media_streams = source.media_streams.clone();
-            }
-            if let Some(path) = &source.path {
-                source_item.path = Some(path.clone());
-            }
             let format = quest_jellyfin_player::detect_item_format(&source_item);
             let resume = item
                 .user_data
                 .as_ref()
                 .map_or(0, |d| d.playback_position_ticks.max(0));
             Ok(
-                json!({"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
+                json!({"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
             )
         }
         "start" | "progress" | "stop" => {
