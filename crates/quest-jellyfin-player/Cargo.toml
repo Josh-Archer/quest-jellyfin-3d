@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Stereo video rendering and playback engine for quest-jellyfin-3d using xr-core and xr-video"
 
 [dependencies]
-jellyfin-client = { path = "../jellyfin" }
+jellyfin-client.workspace = true
 xr-core.workspace = true
 xr-video.workspace = true
 openxr = { version = "0.22", default-features = true }
