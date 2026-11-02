@@ -278,11 +278,7 @@ fn run_xr(
     let mut transform = ScreenTransform {
         position: Vec3::new(0.0, 0.0, -screen_distance),
         orientation: Quat::IDENTITY,
-        quad_size: (
-            screen_width,
-            screen_width
-                / quest_jellyfin_player::calculate_display_aspect_ratio(format, width, height),
-        ),
+        quad_size: crate::surface_size::immersive_quad_size(screen_width, format, width, height),
         distance: screen_distance,
         display_mode: xr_core::DisplayMode::FlatQuad,
         ..Default::default()
@@ -357,7 +353,8 @@ fn run_xr(
                         let aspect = quest_jellyfin_player::calculate_display_aspect_ratio(
                             format, width, height,
                         );
-                        transform.quad_size = (w, w / aspect);
+                        transform.quad_size =
+                            crate::surface_size::immersive_quad_size(w, format, width, height);
                         transform.aspect_ratio = aspect;
                         had_video_frame = false;
                         surface_started = false;
