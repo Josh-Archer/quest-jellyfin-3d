@@ -37,7 +37,7 @@ async fn native_app_pairs_browses_prepares_and_reports_via_jellyfin_api() {
     Mock::given(method("POST")).and(path("/Users/AuthenticateWithQuickConnect")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"AccessToken":"token", "ServerId":"server", "User":{"Id":"user", "Name":"viewer"}}))).mount(&server).await;
     Mock::given(method("GET")).and(path("/Items")).and(header_exists("authorization")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":"movie", "Name":"Film", "Video3DFormat":"HalfSideBySide"}], "TotalRecordCount":1}))).mount(&server).await;
     Mock::given(method("GET")).and(path("/Users/user/Items/movie")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"movie", "Name":"Film", "Video3DFormat":"HalfSideBySide", "UserData":{"PlaybackPositionTicks":42000000}}))).mount(&server).await;
-    Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"PlaySessionId":"session", "MediaSources":[{"Id":"source", "SupportsDirectPlay":true}]}))).mount(&server).await;
+    Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo")).and(wiremock::matchers::body_partial_json(json!({"DeviceProfile":{"Name":"Meta Quest 3","CodecProfiles":[{"Codec":"hevc","Conditions":[{"Property":"Width","Value":"8192"},{"Property":"Height","Value":"4320"},{"Property":"VideoFramerate","Value":"30"}]}]}}))).respond_with(ResponseTemplate::new(200).set_body_json(json!({"PlaySessionId":"session", "MediaSources":[{"Id":"source", "SupportsDirectPlay":true}]}))).mount(&server).await;
     for path_value in [
         "/Sessions/Playing",
         "/Sessions/Playing/Progress",
@@ -57,6 +57,10 @@ async fn native_app_pairs_browses_prepares_and_reports_via_jellyfin_api() {
     let prepared = call(&base, "prepare", json!({"item":"movie"})).await;
     assert_eq!(prepared["resume"], 42000000);
     assert_eq!(prepared["format"], "HalfSideBySide");
+    assert_eq!(
+        prepared["reason"],
+        "Jellyfin confirmed this source supports direct play"
+    );
     assert!(!prepared["url"].as_str().unwrap().contains("token"));
     assert!(prepared["authorization"]
         .as_str()
@@ -115,6 +119,10 @@ async fn transcode_uses_server_url_and_reports_correct_play_method() {
     request["action"] = json!("prepare");
     let prepared = run(request).await.unwrap();
     assert_eq!(prepared["method"], "Transcode");
+    assert_eq!(
+        prepared["reason"],
+        "Jellyfin selected transcoding because direct play is unavailable"
+    );
     assert!(!prepared["url"].as_str().unwrap().contains("token"));
     let mut report = base.clone();
     report["action"] = json!("start");
@@ -122,6 +130,53 @@ async fn transcode_uses_server_url_and_reports_correct_play_method() {
     report["source"] = prepared["source"].clone();
     report["session"] = prepared["session"].clone();
     run(report).await.unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn quest_decode_cap_overrides_server_direct_play_and_reports_why() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-quest-cap-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "s".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Users/user/Items/movie"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Id":"movie","Name":"Movie"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Items/movie/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"source","SupportsDirectPlay":true,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/movie/master.m3u8","MediaStreams":[{"Type":"Video","Codec":"hevc","Width":7680,"Height":4320,"RealFrameRate":30.1}]}]})))
+        .mount(&server)
+        .await;
+    let prepared = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"})).await.unwrap();
+    assert_eq!(prepared["method"], "Transcode");
+    assert_eq!(
+        prepared["url"],
+        format!("{}/Videos/movie/master.m3u8", server.uri())
+    );
+    assert!(prepared["reason"]
+        .as_str()
+        .unwrap()
+        .contains("8K30 hardware cap"));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
