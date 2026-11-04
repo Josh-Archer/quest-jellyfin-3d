@@ -26,7 +26,6 @@ Quick Connect tokens are kept in the application's private, backup-excluded stor
 
 - `crates/quest-app`: Android panel, Rust API bridge, private session store, immersive activity, and APK build script.
 - `crates/quest-jellyfin-player`: format detection, per-eye geometry, and playback primitives.
-- `crates/jellyfin-player`: original XR crate scaffold.
 - `xr-core`, `xr-video` and `jellyfin-client`: versioned crates from [questkit](https://github.com/Josh-Archer/questkit), not copied into this repository. The Jellyfin API client lives there (it was `crates/jellyfin`). The Android build uses the packaging harness from the resolved `xr-core` package.
 
 ## Build and test
