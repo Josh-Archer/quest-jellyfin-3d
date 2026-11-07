@@ -1,6 +1,7 @@
 //! Track actual decoded dimensions before changing an OpenXR surface.
 use quest_jellyfin_player::{
-    build_stereo_eye_layer_specs, calculate_display_aspect_ratio, EyeOrder, StereoFormat,
+    build_stereo_eye_layer_specs, calculate_display_aspect_ratio, EyeOrder, Projection,
+    StereoFormat,
 };
 
 /// Parses JNI stereo format and eye-order strings for immersive playback.
@@ -76,6 +77,16 @@ impl SurfaceSize {
     }
 }
 
+/// Only implemented projections reach the compositor; never silently flatten fisheye.
+pub fn parse_projection(value: &str) -> Result<Projection, &'static str> {
+    match value.trim() {
+        "" | "Flat" => Ok(Projection::Flat),
+        "Equirectangular180" => Ok(Projection::Equirectangular180),
+        "Equirectangular360" => Ok(Projection::Equirectangular360),
+        _ => Err("This video projection is not supported yet"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +139,22 @@ mod tests {
                 immersive_quad_size(width, format, video_width, video_height);
             assert_eq!(actual_width, width);
             assert!((actual_height - 2.25).abs() < 1e-4, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn only_supported_projections_reach_the_compositor() {
+        assert_eq!(parse_projection("Flat"), Ok(Projection::Flat));
+        assert_eq!(
+            parse_projection("Equirectangular180"),
+            Ok(Projection::Equirectangular180)
+        );
+        assert_eq!(
+            parse_projection("Equirectangular360"),
+            Ok(Projection::Equirectangular360)
+        );
+        for unsupported in ["Fisheye", "Unknown"] {
+            assert!(parse_projection(unsupported).is_err());
         }
     }
 

@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
 /** Displays the Android media player's output on the DeskQuest OpenXR surface. */
 public class VrActivity extends Activity {
     static { System.loadLibrary("quest_app"); }
-    private native String nativeRun(int width, int height, String format, String order, boolean passthrough, float screenWidth, float screenDistance, long epoch);
+    private native String nativeRun(int width, int height, String format, String order, String projection, boolean passthrough, float screenWidth, float screenDistance, long epoch);
     private native void nativeStop();
     private native void nativeVideoState(long epoch, int state);
     private native long nativeArm();
@@ -36,6 +36,7 @@ public class VrActivity extends Activity {
     private String failure;
     private boolean outcomeReported;
     private volatile boolean videoLayerSubmitted;
+    private volatile boolean sphericalLayerSubmitted;
     private boolean awaitingResizedSurface;
     private long lastTicks;
     private int generation;
@@ -82,17 +83,17 @@ public class VrActivity extends Activity {
         super.onResume(); android.util.Log.i("Jellyfin3D", "VR resumed"); if (data == null) return; resumed = true;
         final int current = ++generation;
         final long epoch = nativeArm();
-        xrEpoch = epoch; videoLayerSubmitted = false; controlsSubmitted = false;
+        xrEpoch = epoch; videoLayerSubmitted = false; sphericalLayerSubmitted = false; controlsSubmitted = false;
         prepared = false; readyToPlay = false;
         buffering = false; statusLabel = "Preparing…";
-        screenStatus = String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
+        screenStatus = isSpherical() ? (data.optString("projection").equals("Equirectangular180") ? "VR180°" : "VR360°") : String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
         updateTransport(current);
         ui.postDelayed(() -> {
             if (resumed && generation == current && playbackGate.canPlay() && !videoLayerSubmitted) fail("Cinema could not present video on the headset. Try reopening Cinema or use the Quest panel.");
         }, 30000);
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
-            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
+            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), data.optString("projection", "Flat"), getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
             ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) fail("Immersive playback could not start: " + error); else finish(); } });
         });
     }
@@ -105,10 +106,19 @@ public class VrActivity extends Activity {
     /** Snapshot artwork only: native rendering positions it inside the movie surface. */
     public byte[] controlsPixels(int hovered, boolean tools, float opacity) {
         return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, screenStatus,
-            "Pause".equals(playLabel), buffering || statusLabel.startsWith("Preparing"), progressFraction, hovered, tools, opacity);
+            "Pause".equals(playLabel), isSpherical(), buffering || statusLabel.startsWith("Preparing"), progressFraction, hovered, tools, opacity);
     }
     public void onXrControlsSubmitted(long epoch) { if (epoch == xrEpoch) controlsSubmitted = true; }
     public boolean hasSubmittedControls() { return controlsSubmitted; }
+    public void onXrProjectionChanged(long epoch, int coverage, float tilt) {
+        if (epoch != xrEpoch) return;
+        screenStatus = String.format(java.util.Locale.ROOT, "VR%d° · tilt %.0f°", coverage, tilt);
+        ui.post(() -> {
+            if (epoch != xrEpoch) return;
+            String projection = coverage == 180 ? "Equirectangular180" : "Equirectangular360";
+            getSharedPreferences("app", 0).edit().putString("projection."+item, projection).apply();
+        });
+    }
     public void onXrScreenChanged(float width, float distance, float angle) {
         screenStatus = String.format(java.util.Locale.ROOT, "%.1f m · %s", width, angle > 0 ? "curved" : "flat");
         ui.post(() -> getSharedPreferences("app", MODE_PRIVATE).edit()
@@ -116,6 +126,7 @@ public class VrActivity extends Activity {
             .putFloat("screen_distance", QuestPreferences.screenDistance(distance)).putFloat("screen_curve", angle).apply());
     }
     public float initialCurve() { return getSharedPreferences("app", MODE_PRIVATE).getFloat("screen_curve", 0f); }
+    public boolean isSpherical() { return !data.optString("projection","Flat").equals("Flat"); }
     public boolean isLoft() { return "loft".equals(getIntent().getStringExtra("environment")); }
     /** OpenXR focus is lost when removed or when the system menu takes over, without onPause. */
     public void onXrFocusChanged(long epoch, boolean focused) {
@@ -215,6 +226,10 @@ public class VrActivity extends Activity {
             report("start", !player.isPlaying()); scheduleProgress(generation);
         });
     }
+    public void onXrSphericalLayerSubmitted(long epoch) {
+        if (epoch == xrEpoch) sphericalLayerSubmitted = true;
+    }
+    public boolean hasSubmittedSphericalLayer() { return sphericalLayerSubmitted; }
     public boolean hasSubmittedVideoLayer() { return videoLayerSubmitted; }
     private void beginPlayback(MediaPlayer mp) {
         long resumeMs = Math.max(lastTicks, data.optLong("resume")) / 10000L;

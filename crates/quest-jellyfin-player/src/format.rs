@@ -4,9 +4,9 @@
 //! module only adds what xr-video does not model: which half holds which eye.
 
 use jellyfin_client::{BaseItem, Video3DFormat};
-use xr_video::format::{detect_format, ContainerHints, DetectionSource, Projection};
+use xr_video::format::{detect_format, ContainerHints, DetectionSource};
 
-pub use xr_video::format::StereoFormat;
+pub use xr_video::format::{Projection, StereoFormat};
 
 /// Which half of a packed frame holds the left eye.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

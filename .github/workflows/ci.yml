@@ -49,6 +49,7 @@ jobs:
               if name == "xr-core":
                   assert os.path.isfile(os.path.join(os.path.dirname(pkg["manifest_path"]), "android", "build.sh"))
           PY
+      - run: python3 -m unittest discover -s tools -p 'test_*.py'
       - run: crates/quest-app/android/tests/run.sh
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

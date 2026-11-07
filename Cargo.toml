@@ -23,6 +23,6 @@ tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 wiremock = "0.6"
 # Published from https://github.com/Josh-Archer/questkit.
-xr-core = "0.1.1"
+xr-core = "0.1.6"
 xr-video = "0.1.1"
 jellyfin-client = "0.1"
