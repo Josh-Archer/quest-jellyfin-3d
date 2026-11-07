@@ -7,7 +7,7 @@ use jellyfin_client::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::playback_profile::{evaluate_direct_play, quest_device_profile};
+use crate::playback_profile::{evaluate_for_decoder, profile_for_decoder};
 
 fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
     v.get(key)
@@ -268,7 +268,8 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .as_u64()
                 .map(|n| n.clamp(4_000_000, 120_000_000));
             let allow_transcoding = v["allow_transcoding"].as_bool().unwrap_or(true);
-            let profile = quest_device_profile();
+            let hardware_hevc_8k60 = v["hardware_hevc_8k60"].as_bool().unwrap_or(false);
+            let profile = profile_for_decoder(hardware_hevc_8k60);
             let mut info = client
                 .playback_info_with_policy(
                     id,
@@ -352,7 +353,7 @@ pub async fn run(v: Value) -> Result<Value, String> {
                     source_item.video_3d_format = None;
                 }
             }
-            let decision = evaluate_direct_play(&profile, &source_item);
+            let decision = evaluate_for_decoder(&profile, &source_item, hardware_hevc_8k60);
             if let jellyfin_client::DirectPlayDecision::TranscodeRequired { reason: cap_reason } =
                 decision
             {

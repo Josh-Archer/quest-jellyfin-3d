@@ -102,20 +102,22 @@ public class DeviceSmoke extends Instrumentation {
     private void saveControls(Activity vr, String name) throws Exception {
         java.lang.reflect.Method art=vr.getClass().getMethod("controlsPixels",int.class,boolean.class,float.class);
         byte[] normal=(byte[])art.invoke(vr,-1,false,1f), hidden=(byte[])art.invoke(vr,-1,false,0f);
-        check(normal.length==512*256*4 && hidden.length==normal.length,"Invalid controls atlas");
-        for(int i=0;i<512*192;i++) check(hidden[4*i+3]==0,"Hidden controls remained opaque");
-        for(int i=512*192*4;i<normal.length;i++) check(normal[i]==hidden[i],"Fading controls changed loft materials");
+        check(normal.length==1536*784*4 && hidden.length==normal.length,"Invalid controls atlas");
+        for(int i=0;i<1536*784;i++) check(hidden[4*i+3]==0,"Hidden controls remained opaque");
+        java.lang.reflect.Method env=vr.getClass().getMethod("environmentPixels");
+        byte[] room=(byte[])env.invoke(vr); check(room.length==512*256*4,"Invalid separate room atlas");
+        byte[] roomAgain=(byte[])env.invoke(vr);check(java.util.Arrays.equals(room,roomAgain),"Controls changed room materials");
         saveAtlas(normal,name);
         saveAtlas((byte[])art.invoke(vr,5,true,1f),name+"-screen-tools");
     }
     private void saveAtlas(byte[] rgba,String name) throws Exception {
-        int[] pixels=new int[512*256];
+        int[] pixels=new int[1536*784];
         for(int i=0;i<pixels.length;i++) {
             int a=rgba[4*i+3]&255, r=0,g=0,b=0;
             if(a>0) { r=Math.min(255,(rgba[4*i]&255)*255/a); g=Math.min(255,(rgba[4*i+1]&255)*255/a); b=Math.min(255,(rgba[4*i+2]&255)*255/a); }
             pixels[i]=(a<<24)|(r<<16)|(g<<8)|b;
         }
-        Bitmap bitmap=Bitmap.createBitmap(pixels,512,256,Bitmap.Config.ARGB_8888);
+        Bitmap bitmap=Bitmap.createBitmap(pixels,1536,784,Bitmap.Config.ARGB_8888);
         try(FileOutputStream out=new FileOutputStream(new File(activity.getExternalFilesDir(null),name+".png"))) { bitmap.compress(Bitmap.CompressFormat.PNG,100,out); } bitmap.recycle();
     }
     @Override public void onStart() {
@@ -211,6 +213,22 @@ public class DeviceSmoke extends Instrumentation {
                 check((Boolean)controls.invoke(vr), "No submitted controls layer: " + environment);
                 check((Boolean)vr.getClass().getMethod("hasSubmittedSphericalLayer").invoke(vr) == spherical, "Incorrect compositor layer type: " + environment);
                 check(playing(vr), "Video did not start: " + environment + " " + startupState(vr, false));
+                java.lang.reflect.Method count=vr.getClass().getMethod("currentVideoLayerCount");
+                int expectedLayers=(spherical || environment.equals("loft")) ? 2 : 1;
+                check((Integer)count.invoke(vr)==expectedLayers,"Incorrect eye layer count");
+                runOnMainSync(() -> { try {
+                    Object presentation=field(vr,"presentation");
+                    java.lang.reflect.Method buffering=presentation.getClass().getDeclaredMethod("buffering",boolean.class);buffering.setAccessible(true);buffering.invoke(presentation,true);
+                    java.lang.reflect.Method publish=vr.getClass().getDeclaredMethod("publishPresentation");publish.setAccessible(true);publish.invoke(vr);
+                }catch(Exception e){throw new RuntimeException(e);} });
+                SystemClock.sleep(500);check((Integer)count.invoke(vr)==0,"Stale stereo video remained visible during buffering");
+                check((Boolean)controls.invoke(vr),"Buffering lost controls");
+                runOnMainSync(() -> { try {
+                    Object presentation=field(vr,"presentation");
+                    java.lang.reflect.Method buffering=presentation.getClass().getDeclaredMethod("buffering",boolean.class);buffering.setAccessible(true);buffering.invoke(presentation,false);
+                    java.lang.reflect.Method publish=vr.getClass().getDeclaredMethod("publishPresentation");publish.setAccessible(true);publish.invoke(vr);
+                }catch(Exception e){throw new RuntimeException(e);} });
+                SystemClock.sleep(500);check((Integer)count.invoke(vr)==expectedLayers,"Video did not return after buffering");
                 command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
                 command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
                 java.lang.reflect.Field epochField = vr.getClass().getDeclaredField("xrEpoch"); epochField.setAccessible(true);

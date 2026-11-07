@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
 /** Displays the Android media player's output on the DeskQuest OpenXR surface. */
 public class VrActivity extends Activity {
     static { System.loadLibrary("quest_app"); }
-    private native String nativeRun(int width, int height, String format, String order, String projection, boolean passthrough, float screenWidth, float screenDistance, long epoch);
+    private native String nativeRun(int width, int height, String format, String order, String projection, boolean swapEyes, boolean comfortMono, boolean passthrough, float screenWidth, float screenDistance, long epoch);
     private native void nativeStop();
     private native void nativeVideoState(long epoch, int state);
     private native long nativeArm();
@@ -30,6 +30,7 @@ public class VrActivity extends Activity {
     private JSONObject data;
     private String server, device, item;
     private MediaPlayer player;
+    private Runnable afterSeek;
     private Surface surface;
     private boolean started;
     private boolean completed;
@@ -37,6 +38,7 @@ public class VrActivity extends Activity {
     private boolean outcomeReported;
     private volatile boolean videoLayerSubmitted;
     private volatile boolean sphericalLayerSubmitted;
+    private volatile int videoLayerCount;
     private boolean awaitingResizedSurface;
     private long lastTicks;
     private int generation;
@@ -52,7 +54,10 @@ public class VrActivity extends Activity {
     private volatile String screenStatus = "Flat screen";
     private volatile String audioLabel = "Audio";
     private volatile boolean controlsSubmitted;
+    private volatile boolean swapped;
+    private volatile boolean comfortMono;
     private volatile boolean buffering;
+    private VideoPresentation presentation = new VideoPresentation();
     private final android.content.BroadcastReceiver screenOff = new android.content.BroadcastReceiver() {
         @Override public void onReceive(android.content.Context context, Intent intent) {
             if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) interruptPlayback();
@@ -65,6 +70,7 @@ public class VrActivity extends Activity {
         window.setBackgroundColor(android.graphics.Color.BLACK); setContentView(window);
         android.util.Log.i("Jellyfin3D", "VR created: display=" + getDisplay().getDisplayId() + " task=" + getTaskId());
         registerReceiver(screenOff, new android.content.IntentFilter(Intent.ACTION_SCREEN_OFF), android.content.Context.RECEIVER_NOT_EXPORTED);
+        HorizonStyle.initialize(getResources(), getPackageName());
         loadPlaybackIntent();
     }
     private void loadPlaybackIntent() {
@@ -73,6 +79,8 @@ public class VrActivity extends Activity {
         try {
             data = new JSONObject(getIntent().getStringExtra("playback"));
             videoTitle = data.optString("title", "Jellyfin");
+            swapped = getSharedPreferences("app",0).getBoolean("swap_eyes."+getIntent().getStringExtra("item"),false);
+            comfortMono = getSharedPreferences("app",0).getBoolean("comfort_mono."+getIntent().getStringExtra("item"),false);
             server = getIntent().getStringExtra("server"); device = getIntent().getStringExtra("device"); item = getIntent().getStringExtra("item");
         } catch (Exception e) { fail("Unable to read the selected playback source."); }
     }
@@ -83,9 +91,9 @@ public class VrActivity extends Activity {
         super.onResume(); android.util.Log.i("Jellyfin3D", "VR resumed"); if (data == null) return; resumed = true;
         final int current = ++generation;
         final long epoch = nativeArm();
-        xrEpoch = epoch; videoLayerSubmitted = false; sphericalLayerSubmitted = false; controlsSubmitted = false;
+        xrEpoch = epoch; videoLayerCount = 0; videoLayerSubmitted = false; sphericalLayerSubmitted = false; controlsSubmitted = false;
         prepared = false; readyToPlay = false;
-        buffering = false; statusLabel = "Preparing…";
+        presentation = new VideoPresentation(); buffering = false; statusLabel = "Preparing…";
         screenStatus = isSpherical() ? (data.optString("projection").equals("Equirectangular180") ? "VR180°" : "VR360°") : String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
         updateTransport(current);
         ui.postDelayed(() -> {
@@ -93,7 +101,7 @@ public class VrActivity extends Activity {
         }, 30000);
         xrThread.execute(() -> {
             if (!resumed || current != generation) return;
-            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), data.optString("projection", "Flat"), getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
+            String error = nativeRun(data.optInt("width"), data.optInt("height"), data.optString("format"), data.optString("eye_order"), data.optString("projection", "Flat"), swapped, comfortMono, getIntent().getBooleanExtra("passthrough", false), QuestPreferences.screenWidth(getIntent().getFloatExtra("screen_width", 4f)), QuestPreferences.screenDistance(getIntent().getFloatExtra("screen_distance", 2.2f)), epoch);
             ui.post(() -> { if (resumed && current == generation) { if (error != null && !error.isEmpty()) fail("Immersive playback could not start: " + error); else finish(); } });
         });
     }
@@ -105,8 +113,19 @@ public class VrActivity extends Activity {
     private void interruptPlayback() { playbackGate.interrupt(); applyPlaybackGate(); }
     /** Snapshot artwork only: native rendering positions it inside the movie surface. */
     public byte[] controlsPixels(int hovered, boolean tools, float opacity) {
+        return controlsPixelsWithState(hovered,-1,tools,opacity);
+    }
+    public byte[] controlsPixelsWithState(int hovered, int pressed, boolean tools, float opacity) {
         return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, screenStatus,
-            "Pause".equals(playLabel), isSpherical(), buffering || statusLabel.startsWith("Preparing"), progressFraction, hovered, tools, opacity);
+            "Pause".equals(playLabel), isSpherical(), buffering || statusLabel.startsWith("Preparing"), progressFraction,
+            hovered,pressed,tools,opacity,comfortMono || data.optString("format","Mono").equals("Mono"),swapped);
+    }
+    public byte[] environmentPixels() { return PlayerArtwork.environmentPixels(); }
+    public void onXrStereoChanged(long epoch, boolean swap, boolean mono) {
+        if (epoch != xrEpoch) return;
+        swapped=swap;comfortMono=mono;
+        ui.post(() -> { if(epoch==xrEpoch) getSharedPreferences("app",0).edit()
+            .putBoolean("swap_eyes."+item,swap).putBoolean("comfort_mono."+item,mono).apply(); });
     }
     public void onXrControlsSubmitted(long epoch) { if (epoch == xrEpoch) controlsSubmitted = true; }
     public boolean hasSubmittedControls() { return controlsSubmitted; }
@@ -152,7 +171,7 @@ public class VrActivity extends Activity {
             if (!resumed || !readyToPlay || player == null) return;
             try {
                 int duration = player.getDuration();
-                if (duration > 0) player.seekTo((long)duration * Math.max(0, Math.min(1000, fraction)) / 1000, MediaPlayer.SEEK_CLOSEST);
+                if (duration > 0) { presentation.seeking(true); publishPresentation(); player.seekTo((long)duration * Math.max(0, Math.min(1000, fraction)) / 1000, MediaPlayer.SEEK_CLOSEST); }
             } catch (IllegalStateException ignored) {}
         });
     }
@@ -161,6 +180,7 @@ public class VrActivity extends Activity {
         if (player != null && prepared) try {
             int position = player.getCurrentPosition(), duration = player.getDuration();
             boolean playing = readyToPlay && player.isPlaying();
+            presentation.observePosition(position, playing, android.os.SystemClock.elapsedRealtime()); publishPresentation();
             playLabel = playing ? "Pause" : "Play";
             progressFraction = duration > 0 ? Math.max(0f, Math.min(1f, (float)position / duration)) : 0f;
             transportTime = clock(position) + " / " + clock(duration);
@@ -168,6 +188,9 @@ public class VrActivity extends Activity {
             nativePlaybackStatus(xrEpoch, playing && !buffering);
         } catch (IllegalStateException ignored) {}
         ui.postDelayed(() -> updateTransport(current), 250);
+    }
+    private void publishPresentation() {
+        buffering = presentation.waiting(); nativeVideoState(xrEpoch, presentation.state());
     }
     private static String clock(int millis) { int seconds = Math.max(0, millis / 1000); return seconds >= 3600 ? String.format(java.util.Locale.ROOT, "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60) : String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60); }
     private void fail(String message) {
@@ -193,18 +216,26 @@ public class VrActivity extends Activity {
                 player.setOnInfoListener((mp, what, extra) -> {
                     if (!resumed || player != mp) return false;
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
-                        nativeVideoState(xrEpoch, 1);
+                        presentation.firstFrame(); publishPresentation();
                         android.util.Log.i("Jellyfin3D", "Decoder produced first video frame");
                         lastTicks = (long)mp.getCurrentPosition() * 10000;
                     }
-                    if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) { buffering = true; nativeVideoState(xrEpoch, 2); }
-                    else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END && started) { buffering = false; nativeVideoState(xrEpoch, 1); }
+                    if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) { presentation.buffering(true); publishPresentation(); }
+                    else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) { presentation.buffering(false); publishPresentation(); }
                     return false;
+                });
+                player.setOnSeekCompleteListener(mp -> {
+                    if (player != mp) return;
+                    presentation.seeking(false); publishPresentation();
+                    Runnable completion = afterSeek; afterSeek = null;
+                    if (completion != null) completion.run();
+                    else if (started) { lastTicks = (long)mp.getCurrentPosition() * 10000; report("progress", !mp.isPlaying()); }
                 });
                 player.setOnPreparedListener(mp -> {
                     if (!resumed || player != mp) return;
                     prepared = true;
                     int width = mp.getVideoWidth(), height = mp.getVideoHeight();
+                    android.util.Log.i("Jellyfin3D", "Prepared video " + width + "x" + height);
                     if (SurfacePreparation.needsResize(data.optInt("width"), data.optInt("height"), width, height)) {
                         // Rebind while the decoder is prepared but before it starts producing buffers.
                         awaitingResizedSurface = true;
@@ -230,6 +261,8 @@ public class VrActivity extends Activity {
         if (epoch == xrEpoch) sphericalLayerSubmitted = true;
     }
     public boolean hasSubmittedSphericalLayer() { return sphericalLayerSubmitted; }
+    public void onXrPresentationChanged(long epoch,int layers,boolean mono) { if(epoch==xrEpoch) videoLayerCount=layers; }
+    public int currentVideoLayerCount() { return videoLayerCount; }
     public boolean hasSubmittedVideoLayer() { return videoLayerSubmitted; }
     private void beginPlayback(MediaPlayer mp) {
         long resumeMs = Math.max(lastTicks, data.optLong("resume")) / 10000L;
@@ -243,7 +276,7 @@ public class VrActivity extends Activity {
             }, 15000);
         };
         if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
-            mp.setOnSeekCompleteListener(ignored -> { mp.setOnSeekCompleteListener(null); begin.run(); });
+            afterSeek = begin; presentation.seeking(true); publishPresentation();
             mp.seekTo(resumeMs, MediaPlayer.SEEK_CLOSEST);
         } else begin.run();
     }
@@ -289,13 +322,7 @@ public class VrActivity extends Activity {
                     long target = Math.max(0L, (long)position + (command == 1 ? -10000L : 10000L));
                     int duration = player.getDuration();
                     if (duration > 0) target = Math.min(target, duration);
-                    player.setOnSeekCompleteListener(mp -> {
-                        if (player != mp || !started) return;
-                        mp.setOnSeekCompleteListener(null);
-                        lastTicks = (long)mp.getCurrentPosition() * 10000;
-                        report("progress", !mp.isPlaying());
-                    });
-                    player.seekTo(Math.min(target, Integer.MAX_VALUE), MediaPlayer.SEEK_CLOSEST);
+                    presentation.seeking(true); publishPresentation(); player.seekTo(Math.min(target, Integer.MAX_VALUE), MediaPlayer.SEEK_CLOSEST);
                 }
             } catch (IllegalStateException e) { Toast.makeText(this, "Playback control unavailable", Toast.LENGTH_SHORT).show(); }
         });

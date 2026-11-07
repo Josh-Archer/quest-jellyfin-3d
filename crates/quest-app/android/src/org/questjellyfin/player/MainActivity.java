@@ -411,6 +411,8 @@ public class MainActivity extends Activity {
         page("Opening video", true); backAction = () -> details(item); retryAction = () -> prepare(item, resume);
         loading("Requesting playback from Jellyfin…"); addButton(body, "Cancel", () -> details(item));
         JSONObject preparation = with(value("item", item), "allow_transcoding", prefs.getBoolean("allow_transcoding", true));
+        with(preparation,"hardware_hevc_8k60",VideoDecoderCapabilities.supportsHevc8k60());
+        android.util.Log.i("Jellyfin3D", "Regular hardware HEVC 8K60=" + VideoDecoderCapabilities.supportsHevc8k60());
         with(preparation,"projection",prefs.getString("projection."+item,"Auto"));
         String quality = prefs.getString("quality", "original");
         if (!quality.equals("original")) { try { with(preparation, "max_bitrate", Long.parseLong(quality)); } catch (NumberFormatException ignored) {} }
