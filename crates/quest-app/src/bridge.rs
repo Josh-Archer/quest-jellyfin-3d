@@ -1,8 +1,8 @@
 use crate::AppSessionStore;
 use base64::Engine;
 use jellyfin_client::{
-    ClientIdentity, ItemsQuery, JellyfinClient, PlaybackProgressRequest, PlaybackStartRequest,
-    PlaybackStopRequest, QuickConnectPoll,
+    ClientIdentity, ItemsQuery, JellyfinClient, MemoryTokenStore, PlaybackProgressRequest,
+    PlaybackStartRequest, PlaybackStopRequest, QuickConnectPoll, TokenStore,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -54,11 +54,69 @@ pub async fn run(v: Value) -> Result<Value, String> {
         env!("CARGO_PKG_VERSION"),
     )
     .map_err(|e| e.to_string())?;
-    let client =
-        JellyfinClient::new(required(&v, "server")?, identity, store).map_err(|e| e.to_string())?;
+    let client = JellyfinClient::new(required(&v, "server")?, identity, store.clone())
+        .map_err(|e| e.to_string())?;
+    // Bind delayed browse/image/playback work to the account that issued it, even after a switch.
+    let client = if !matches!(
+        action,
+        "status"
+            | "profiles"
+            | "public_users"
+            | "login"
+            | "switch_user"
+            | "signout"
+            | "initiate"
+            | "poll"
+    ) {
+        if let Some(user) = v["user_id"].as_str().filter(|s| !s.is_empty()) {
+            let session = store
+                .find(client.base_url(), client.identity().device_id(), user)
+                .map_err(|e| e.to_string())?
+                .ok_or("This account is no longer saved. Sign in again.")?;
+            account_client(&client, &session)?
+        } else {
+            client
+        }
+    } else {
+        client
+    };
     match action {
+        "profiles" => {
+            let active = client.session().map(|s| s.user_id);
+            let users = store
+                .sessions(client.base_url(), client.identity().device_id())
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({"users":users.iter().map(|s| json!({"id":s.user_id,"name":s.user_name,"current":Some(&s.user_id)==active.as_ref()})).collect::<Vec<_>>()}),
+            )
+        }
+        "public_users" => crate::server_api::public_users(&client).await,
+        "login" => {
+            let session = crate::server_api::authenticate(
+                &client,
+                required(&v, "username")?.trim(),
+                v["password"].as_str().ok_or("Missing password")?,
+            )
+            .await?;
+            store.save(&session).map_err(|e| e.to_string())?;
+            Ok(json!({"user":session.user_name,"user_id":session.user_id}))
+        }
+        "switch_user" => {
+            let session = store
+                .find(
+                    client.base_url(),
+                    client.identity().device_id(),
+                    required(&v, "target_user")?,
+                )
+                .map_err(|e| e.to_string())?
+                .ok_or("This account is no longer saved. Sign in again.")?;
+            let candidate = account_client(&client, &session)?;
+            crate::server_api::validate_user(&candidate).await?;
+            store.save(&session).map_err(|e| e.to_string())?;
+            Ok(json!({"user":session.user_name,"user_id":session.user_id}))
+        }
         "status" => Ok(
-            json!({"signed_in": client.session().is_some(), "user":client.session().map(|s| s.user_name)}),
+            json!({"signed_in": client.session().is_some(), "user":client.session().map(|s| s.user_name), "user_id":client.session().map(|s| s.user_id)}),
         ),
         "signout" => {
             client.clear_session().map_err(|e| e.to_string())?;
@@ -84,7 +142,22 @@ pub async fn run(v: Value) -> Result<Value, String> {
             Ok(json!({"items":page.items.iter().map(item_json).collect::<Vec<_>>()}))
         }
         "resume" => {
-            let page = client.resume_items().await.map_err(|e| e.to_string())?;
+            let page = if v["three_d_only"].as_bool().unwrap_or(false) {
+                crate::server_api::stereo_items(
+                    &client,
+                    &ItemsQuery {
+                        limit: 20,
+                        include_item_types: vec!["Movie".into(), "Episode".into(), "Video".into()],
+                        sort_by: Some("DatePlayed".into()),
+                        descending: true,
+                        ..Default::default()
+                    },
+                    true,
+                )
+                .await?
+            } else {
+                client.resume_items().await.map_err(|e| e.to_string())?
+            };
             Ok(json!({"items":page.items.iter().map(item_json).collect::<Vec<_>>()}))
         }
         "details" => {
@@ -105,54 +178,70 @@ pub async fn run(v: Value) -> Result<Value, String> {
             Ok(json!({}))
         }
         "browse" => {
-            let page = client
-                .list_items(&ItemsQuery {
-                    start_index: v["start"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
-                    limit: v["limit"].as_u64().unwrap_or(50).clamp(1, 50) as u32,
-                    recursive: true,
-                    parent_id: v["parent"]
-                        .as_str()
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned),
-                    is_favorite: v["favorite"].as_bool(),
-                    sort_by: Some(
-                        match (v["kind"].as_str(), v["sort"].as_str()) {
-                            (Some("episodes"), _) => "ParentIndexNumber,IndexNumber,SortName",
-                            (_, Some("latest")) => "DateCreated",
-                            _ => "SortName",
+            let query = ItemsQuery {
+                start_index: v["start"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+                limit: v["limit"].as_u64().unwrap_or(50).clamp(1, 50) as u32,
+                recursive: true,
+                parent_id: v["parent"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                is_favorite: v["favorite"].as_bool(),
+                sort_by: Some(
+                    match (v["kind"].as_str(), v["sort"].as_str()) {
+                        (Some("episodes"), _) => "ParentIndexNumber,IndexNumber,SortName",
+                        (_, Some("latest")) => "DateCreated",
+                        _ => "SortName",
+                    }
+                    .into(),
+                ),
+                descending: v["kind"].as_str() != Some("episodes")
+                    && v["sort"].as_str() == Some("latest"),
+                extra_fields: vec!["Overview".into(), "PrimaryImageAspectRatio".into()],
+                search_term: v["search"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                include_item_types: match v["kind"].as_str() {
+                    Some("movies") => vec!["Movie".into()],
+                    Some("shows") => vec!["Series".into()],
+                    Some("episodes") => vec!["Episode".into()],
+                    Some("favorites") => vec![
+                        "Movie".into(),
+                        "Series".into(),
+                        "Episode".into(),
+                        "Video".into(),
+                    ],
+                    _ if v["search"].as_str().is_some_and(|s| !s.trim().is_empty()) => vec![
+                        "Movie".into(),
+                        "Series".into(),
+                        "Episode".into(),
+                        "Video".into(),
+                    ],
+                    _ => vec!["Movie".into(), "Series".into(), "Video".into()],
+                },
+                ..Default::default()
+            };
+            let page = if v["three_d_only"].as_bool().unwrap_or(false) {
+                let mut query = query;
+                query.include_item_types = query
+                    .include_item_types
+                    .into_iter()
+                    .flat_map(|kind| {
+                        if kind == "Series" {
+                            vec!["Episode".into()]
+                        } else {
+                            vec![kind]
                         }
-                        .into(),
-                    ),
-                    descending: v["kind"].as_str() != Some("episodes")
-                        && v["sort"].as_str() == Some("latest"),
-                    extra_fields: vec!["Overview".into(), "PrimaryImageAspectRatio".into()],
-                    search_term: v["search"]
-                        .as_str()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned),
-                    include_item_types: match v["kind"].as_str() {
-                        Some("movies") => vec!["Movie".into()],
-                        Some("shows") => vec!["Series".into()],
-                        Some("episodes") => vec!["Episode".into()],
-                        Some("favorites") => vec![
-                            "Movie".into(),
-                            "Series".into(),
-                            "Episode".into(),
-                            "Video".into(),
-                        ],
-                        _ if v["search"].as_str().is_some_and(|s| !s.trim().is_empty()) => vec![
-                            "Movie".into(),
-                            "Series".into(),
-                            "Episode".into(),
-                            "Video".into(),
-                        ],
-                        _ => vec!["Movie".into(), "Series".into(), "Video".into()],
-                    },
-                    ..Default::default()
-                })
-                .await
-                .map_err(|e| e.to_string())?;
+                    })
+                    .collect();
+                query.include_item_types.sort();
+                query.include_item_types.dedup();
+                crate::server_api::stereo_items(&client, &query, false).await?
+            } else {
+                client.list_items(&query).await.map_err(|e| e.to_string())?
+            };
             let items: Vec<_> = page.items.iter().map(item_json).collect();
             Ok(json!({"items":items,"next":page.next_start_index()}))
         }
@@ -278,7 +367,7 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .as_ref()
                 .map_or(0, |d| d.playback_position_ticks.max(0));
             Ok(
-                json!({"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
+                json!({"user_id":client.session().map(|s| s.user_id),"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
             )
         }
         "start" | "progress" | "stop" => {
@@ -321,4 +410,14 @@ pub async fn run(v: Value) -> Result<Value, String> {
         }
         _ => Err("Unknown action".into()),
     }
+}
+
+fn account_client(
+    client: &JellyfinClient,
+    session: &jellyfin_client::StoredSession,
+) -> Result<JellyfinClient, String> {
+    let memory = Arc::new(MemoryTokenStore::new());
+    memory.save(session).map_err(|e| e.to_string())?;
+    JellyfinClient::new(client.base_url(), client.identity().clone(), memory)
+        .map_err(|e| e.to_string())
 }

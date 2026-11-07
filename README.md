@@ -22,6 +22,26 @@ This is an independent native client with familiar Jellyfin browsing flows, not 
 
 Quick Connect tokens are kept in the application's private, backup-excluded storage and bound to the server URL and device identity. Video requests use an authorization header rather than placing the token in the URL. Prefer HTTPS when connecting outside a trusted network; HTTP is supported for local servers and sends credentials without transport encryption.
 
+## Library and accounts
+
+The library header uses the Jellyfin service logo, the current page, and a user picker.
+The **3D only** toggle stays visible beside navigation and remembers its setting. It uses
+Jellyfin's `Is3D` filter before pagination across libraries, search, favorites, recent titles
+and Continue Watching. In Shows it lists matching 3D episodes. Titles need their 3D format
+set in Jellyfin to appear; the toggle does not convert ordinary video into stereo.
+
+Choose your name in the header or **Settings → Switch user**. Public server users can sign
+in with a username/password or Quick Connect; hidden users can enter their username.
+Authenticated accounts are remembered on this Quest and can be switched with one selection.
+A saved token is checked with Jellyfin before switching. Sign out removes the current saved
+account without removing the others. Passwords are never stored. Library requests and
+playback reports remain bound to the user who opened them, including while switching.
+
+Panel playback uses an overlaid top bar that fades after five idle seconds while playing.
+Tap the movie or use controller input to reveal it; pause, buffering and errors keep it visible.
+Hovering or interacting with the bar keeps its buttons available. Hiding it does not resize
+the video surface. The immersive player retains its movie-attached controls and idle fade.
+
 ## Layout
 
 - `crates/quest-app`: Android panel, Rust API bridge, private session store, immersive activity, and APK build script.

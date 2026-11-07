@@ -36,14 +36,24 @@ public class DeviceSmoke extends Instrumentation {
         while (!contains(text) && SystemClock.uptimeMillis() < end) SystemClock.sleep(100);
         check(contains(text), "Missing UI: " + text);
     }
-    private void click(String text) { await(text); runOnMainSync(() -> { TextView view = find(activity.getWindow().getDecorView(), text); check(view.performClick(), "Not clickable: " + text); }); }
+    private TextView findButton(View view,String text) {
+        if(view.getVisibility()!=View.VISIBLE || !view.isShown()) return null;
+        if(view instanceof TextView && view.isClickable() && view.isEnabled() && ((TextView)view).getText().toString().equals(text)) return (TextView)view;
+        if(view instanceof ViewGroup) for(int i=0;i<((ViewGroup)view).getChildCount();i++) { TextView found=findButton(((ViewGroup)view).getChildAt(i),text); if(found!=null)return found; }
+        return null;
+    }
+    private void click(String text) {
+        await(text); final boolean[] clicked={false};
+        runOnMainSync(() -> { TextView button=findButton(activity.getWindow().getDecorView(),text); clicked[0]=button!=null && button.performClick(); });
+        check(clicked[0],"Not clickable: " + text);
+    }
     private android.widget.EditText searchInput(View view) {
         if (view instanceof android.widget.EditText) return (android.widget.EditText)view;
         if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup)view).getChildCount(); i++) { android.widget.EditText found = searchInput(((ViewGroup)view).getChildAt(i)); if (found != null) return found; }
         return null;
     }
     private int posters(View view) {
-        int count = view instanceof ImageView && ((ImageView)view).getDrawable() instanceof BitmapDrawable ? 1 : 0;
+        int count = view instanceof ImageView && view.getContentDescription() != null && view.getContentDescription().toString().startsWith("Poster for ") && ((ImageView)view).getDrawable() instanceof BitmapDrawable ? 1 : 0;
         if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup)view).getChildCount(); i++) count += posters(((ViewGroup)view).getChildAt(i));
         return count;
     }
@@ -54,6 +64,21 @@ public class DeviceSmoke extends Instrumentation {
                 File file = new File(activity.getExternalFilesDir(null), name + ".png"); try (FileOutputStream out = new FileOutputStream(file)) { bitmap.compress(Bitmap.CompressFormat.PNG, 100, out); } bitmap.recycle();
             } catch (Exception e) { throw new RuntimeException(e); }
         });
+    }
+    private Object field(Activity target,String name) {
+        try { java.lang.reflect.Field field=target.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(target); }
+        catch(Exception e) { throw new RuntimeException(e); }
+    }
+    private boolean chromeVisible() {
+        final boolean[] visible={false}; runOnMainSync(() -> { View chrome=(View)field(activity,"chrome"); visible[0]=chrome.getVisibility()==View.VISIBLE; }); return visible[0];
+    }
+    private int[] videoBounds() {
+        final int[] size={0,0}; runOnMainSync(() -> { View video=(View)field(activity,"video"); size[0]=video.getWidth(); size[1]=video.getHeight(); }); return size;
+    }
+    private android.widget.EditText passwordInput(View view) {
+        if (view instanceof android.widget.EditText && "Password".contentEquals(view.getContentDescription())) return (android.widget.EditText)view;
+        if (view instanceof ViewGroup) for(int i=0;i<((ViewGroup)view).getChildCount();i++) { android.widget.EditText found=passwordInput(((ViewGroup)view).getChildAt(i)); if(found!=null)return found; }
+        return null;
     }
     private boolean playing(Activity vr) {
         final boolean[] result = {false}; runOnMainSync(() -> { try { result[0] = (Boolean)vr.getClass().getMethod("isVideoPlaying").invoke(vr); } catch (Exception e) { throw new RuntimeException(e); } }); return result[0];
@@ -107,6 +132,11 @@ public class DeviceSmoke extends Instrumentation {
             do { runOnMainSync(() -> art[0] = posters(activity.getWindow().getDecorView())); if (art[0] > 0) break; SystemClock.sleep(100); } while (SystemClock.uptimeMillis() < end);
             check(art[0] > 0, "Poster bytes never reached ImageViews"); screenshot("home");
             click("Movies"); await("Select a title to see details and playback options"); screenshot("movies");
+            click("3D only"); await("Stereo Feature");
+            check(!contains("Test Feature"),"3D filter kept mono titles"); screenshot("3d-only");
+            check(context.getSharedPreferences("app",0).getBoolean("3d_only",false),"3D filter not persisted");
+            click("Home"); await("Stereo Feature"); check(!contains("Test Feature"),"Home did not preserve 3D filter");
+            click("Movies"); await("Stereo Feature"); click("3D only"); await("Test Feature");
             runOnMainSync(() -> {
                 android.widget.EditText search = searchInput(activity.getWindow().getDecorView());
                 search.setText("fail-once"); find((View)search.getParent(), "Search").performClick();
@@ -121,11 +151,32 @@ public class DeviceSmoke extends Instrumentation {
             click("♡ Add favorite"); await("♥ Remove favorite");
             click("Play from beginning"); await("Requesting playback from Jellyfin…"); screenshot("opening-video"); await("Where would you like to watch?"); screenshot("playback-choice");
             click("Watch in Quest panel"); await("Playing"); screenshot("panel-playing");
+            int[] before=videoBounds();
+            long hideDeadline=SystemClock.uptimeMillis()+9000;
+            while(chromeVisible() && SystemClock.uptimeMillis()<hideDeadline) SystemClock.sleep(100);
+            check(!chromeVisible(),"Playback top bar did not auto-hide"); screenshot("panel-clean-video");
+            check(java.util.Arrays.equals(before,videoBounds()),"Hiding chrome resized the video surface");
+            runOnMainSync(() -> {
+                long now=SystemClock.uptimeMillis(); View root=activity.getWindow().getDecorView();
+                android.view.MotionEvent down=android.view.MotionEvent.obtain(now,now,0,root.getWidth()/2f,root.getHeight()/2f,0);
+                android.view.MotionEvent up=android.view.MotionEvent.obtain(now,now+30,1,root.getWidth()/2f,root.getHeight()/2f,0);
+                activity.dispatchTouchEvent(down); activity.dispatchTouchEvent(up); down.recycle(); up.recycle();
+            });
+            check(chromeVisible(),"Movie tap did not reveal top bar");
+            runOnMainSync(() -> ((android.widget.VideoView)field(activity,"video")).pause()); SystemClock.sleep(600);
+            check(chromeVisible(),"Paused video lost top bar");
             click("Back to title"); await("Play from beginning");
             click("Settings"); await("Default player"); screenshot("settings");
             click("Quest panel");
             check("panel".equals(context.getSharedPreferences("app", 0).getString("player", "")), "Player preference not saved");
             click("Home"); await("Continue Watching");
+            click("Viewer ▾"); await("On this Quest"); click("Guest"); await("Sign in to this server");
+            runOnMainSync(() -> passwordInput(activity.getWindow().getDecorView()).setText("wrong-password")); click("Sign in");
+            await("Jellyfin did not authorize this account. Check your credentials or use Quick Connect.");
+            runOnMainSync(() -> passwordInput(activity.getWindow().getDecorView()).setText("test-password")); click("Sign in");
+            await("Welcome, Guest"); await("Guest Feature"); check(!contains("Test Feature"),"Old account titles survived switch"); screenshot("guest-home");
+            click("Guest ▾"); await("On this Quest"); await("Guest · Current"); screenshot("user-picker"); click("Viewer");
+            await("Welcome, Viewer"); await("Test Feature");
             click("Shows"); await("Sample Series");
             runOnMainSync(() -> { View view = find(activity.getWindow().getDecorView(), "Sample Series"); while (!view.isClickable()) view = (View)view.getParent(); view.performClick(); });
             await("S1 E1\nEpisode One"); screenshot("episodes");
@@ -178,7 +229,7 @@ public class DeviceSmoke extends Instrumentation {
                 saveControls(vr, "controls-" + environment);
                 command.invoke(vr, 4); await("Playback closed."); removeMonitor(vrMonitor);
             }
-            result.putString("stream", "OK: artwork, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
+            result.putString("stream", "OK: service logo/artwork, playback chrome idle-hide/reveal/pause and stable surface, persisted server-side 3D filter, credential failure/retry and remembered user switching, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
         } catch (Throwable error) { result.putString("stream", "FAILED: " + error + "\n"); finish(0, result); }
     }
 }

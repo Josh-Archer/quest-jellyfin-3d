@@ -14,6 +14,7 @@ quest-jellyfin-player = { path = "../quest-jellyfin-player" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

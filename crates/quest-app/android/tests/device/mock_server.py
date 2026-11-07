@@ -16,6 +16,9 @@ def poster():
 def movie():
     return {'Id':'movie','Name':'Test Feature','Type':'Movie','Overview':'A fixture feature for device testing.','ProductionYear':2026,'ImageTags':{'Primary':'test-art'},'RunTimeTicks':300000000,'UserData':{'PlaybackPositionTicks':20000000,'IsFavorite':favorite},'MediaStreams':[{'Type':'Video','Codec':'h264','Width':640,'Height':360}]}
 
+def stereo():
+    item=movie(); item.update(Id='stereo',Name='Stereo Feature',Video3DFormat='HalfSideBySide'); return item
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def send_bytes(self, data, content_type='application/json', status=200):
@@ -24,7 +27,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global search_failed
         parsed = urlparse(self.path); path = parsed.path; query = parse_qs(parsed.query)
-        if path == '/Users/user/Views': self.send_json({'Items':[{'Id':'library','Name':'Fixture Movies'}]})
+        if path == '/Users/Public': self.send_json([{'Id':'user','Name':'Viewer'},{'Id':'guest','Name':'Guest'}])
+        elif path == '/Users/Me': self.send_json({'Id':'guest' if 'guest-token' in self.headers.get('Authorization','') else 'user'})
+        elif path == '/Users/guest/Views': self.send_json({'Items':[{'Id':'guest-library','Name':'Guest library'}]})
+        elif path == '/Users/guest/Items/Resume': self.send_json({'Items':[]})
+        elif path == '/Users/user/Views': self.send_json({'Items':[{'Id':'library','Name':'Fixture Movies'}]})
         elif path == '/Users/user/Items/Resume': self.send_json({'Items':[movie()]})
         elif path == '/Users/user/Items/movie': self.send_json(movie())
         elif path == '/Items':
@@ -33,7 +40,8 @@ class Handler(BaseHTTPRequestHandler):
             kind = query.get('IncludeItemTypes',[''])[0]
             if kind == 'Series': items = [{'Id':'series','Name':'Sample Series','Type':'Series','ImageTags':{'Primary':'art'}}]
             elif kind == 'Episode': items = [{'Id':'episode','Name':'Episode One','Type':'Episode','ParentIndexNumber':1,'IndexNumber':1}]
-            else: items = [movie()]
+            else: items = [stereo()] if query.get('Is3D') == ['true'] else [movie(),stereo()]
+            if 'guest-token' in self.headers.get('Authorization',''): items=[{'Id':'guest-movie','Name':'Guest Feature','Type':'Movie'}]
             self.send_json({'Items':items,'TotalRecordCount':len(items)})
         elif '/Images/Primary' in path: self.send_bytes(poster(),'image/png')
         elif path == '/Videos/movie/stream':
@@ -41,9 +49,12 @@ class Handler(BaseHTTPRequestHandler):
         else: self.send_bytes(b'{}',status=404)
     def do_POST(self):
         global favorite
-        self.rfile.read(int(self.headers.get('Content-Length',0)))
+        raw=self.rfile.read(int(self.headers.get('Content-Length',0))); body=json.loads(raw) if raw else {}
         path = urlparse(self.path).path
-        if path == '/Items/movie/PlaybackInfo':
+        if path == '/Users/AuthenticateByName':
+            if body.get('Username') == 'Guest' and body.get('Pw') == 'test-password': self.send_json({'AccessToken':'guest-token','ServerId':'mock','User':{'Id':'guest','Name':'Guest'}})
+            else: self.send_bytes(b'Unauthorized',status=401)
+        elif path == '/Items/movie/PlaybackInfo':
             time.sleep(1)
             self.send_json({'PlaySessionId':'play','MediaSources':[{'Id':'source','SupportsDirectPlay':True,'MediaStreams':movie()['MediaStreams']}]})
         elif path == '/Users/user/FavoriteItems/movie': favorite = True; self.send_json({'IsFavorite':True})

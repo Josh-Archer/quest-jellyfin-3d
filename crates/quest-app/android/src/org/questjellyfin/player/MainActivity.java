@@ -18,6 +18,9 @@ import android.util.LruCache;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.KeyEvent;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
@@ -41,12 +44,16 @@ public class MainActivity extends Activity {
         @Override protected int sizeOf(String key, Bitmap image) { return image.getAllocationByteCount(); }
     };
     private SharedPreferences prefs;
-    private LinearLayout root, body;
+    private LinearLayout root, body, chrome;
+    private final PlaybackChrome chromePolicy = new PlaybackChrome();
+    private boolean playbackPage, touchingPlayer, hoveringChrome, threeDOnly, revealingChromeTouch;
+    private MediaController panelControls;
+    private Runnable filterReload = this::dashboard;
     private TextView status;
     private ProgressBar spinner;
     private Button retryButton;
     private Runnable retryAction;
-    private String server, device, userName = "", pairingSecret;
+    private String server, device, userName = "", userId = "", pairingSecret;
     private String activeItem, activeSource, activeSession, activeMethod;
     private VideoView video;
     private MediaPlayer panelPlayer;
@@ -69,7 +76,7 @@ public class MainActivity extends Activity {
     private JSONObject envelope(String action, JSONObject extra) throws Exception {
         JSONObject req = extra == null ? new JSONObject() : extra;
         return req.put("action", action).put("server", server).put("device", device)
-            .put("store", getFilesDir().getAbsolutePath() + "/jellyfin-session.json");
+            .put("store", getFilesDir().getAbsolutePath() + "/jellyfin-session.json").put("user_id", userId);
     }
     private void request(String action, JSONObject extra, Done done) { request(action, extra, done, this::error); }
     private void request(String action, JSONObject extra, Done done, Failed failed) {
@@ -77,9 +84,9 @@ public class MainActivity extends Activity {
         final int current = generation;
         try {
             String raw = envelope(action, extra).toString();
-            boolean readOnly = action.equals("browse") || action.equals("details") || action.equals("prepare") || action.equals("libraries") || action.equals("resume");
+            boolean readOnly = action.equals("browse") || action.equals("details") || action.equals("prepare") || action.equals("libraries") || action.equals("resume") || action.equals("public_users");
             (readOnly ? reads : io).execute(() -> {
-                if (readOnly && (current != generation || !targetServer.equals(server))) return;
+                if ((readOnly || action.equals("login") || action.equals("switch_user") || action.equals("poll")) && (current != generation || !targetServer.equals(server))) return;
                 JSONObject reply;
                 try { reply = new JSONObject(nativeRequest(raw)); }
                 catch (Exception e) { reply = value("ok", false); with(reply, "error", "Could not read the server response."); }
@@ -108,7 +115,7 @@ public class MainActivity extends Activity {
     private Button button(String text, View.OnClickListener click) {
         Button b = new Button(this); b.setText(text); b.setTextSize(16); b.setTextColor(Color.WHITE); b.setAllCaps(false);
         b.setMinHeight(dp(48)); b.setPadding(dp(18), dp(4), dp(18), dp(4)); b.setBackground(background(CARD, 0));
-        b.setOnFocusChangeListener((v, focused) -> v.setBackground(background(CARD, focused ? ACCENT : 0)));
+        b.setOnFocusChangeListener((v, focused) -> v.setBackground(background(v.isSelected() ? Color.rgb(17,87,111) : CARD, focused || v.isSelected() ? ACCENT : 0)));
         b.setOnClickListener(click); return b;
     }
     private void addButton(LinearLayout parent, String title, Runnable action) {
@@ -116,24 +123,39 @@ public class MainActivity extends Activity {
         lp.setMargins(0, dp(4), dp(10), dp(4)); parent.addView(b, lp);
     }
     private void page(String title, boolean navigation) {
-        generation++; pairingSecret = null;
+        generation++; pairingSecret = null; filterReload = this::dashboard; revealingChromeTouch = false; playbackPage = false; touchingPlayer = false; hoveringChrome = false; ui.removeCallbacks(chromeTick);
         root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(24), dp(14), dp(24), dp(14)); root.setBackgroundColor(BG);
-        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView brand = label("Jellyfin", 28); brand.setTextColor(ACCENT); brand.setTypeface(null, Typeface.BOLD);
-        header.addView(brand); TextView subtitle = label("  /  " + title, 20); header.addView(subtitle, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView quest = label("QUEST", 13); quest.setTextColor(Color.LTGRAY); header.addView(quest); root.addView(header);
+        chrome = new LinearLayout(this); chrome.setOrientation(LinearLayout.VERTICAL); root.addView(chrome);
+        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0,0,0,dp(8));
+        ImageView brand = new ImageView(this); brand.setContentDescription("Jellyfin service"); brand.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        brand.setImageResource(getResources().getIdentifier("jellyfin_service", "drawable", getPackageName()));
+        header.addView(brand, new LinearLayout.LayoutParams(dp(48),dp(48)));
+        TextView subtitle = label(title, 23); subtitle.setMaxLines(1); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END); subtitle.setTypeface(null,Typeface.BOLD); subtitle.setPadding(dp(14),0,dp(12),0);
+        header.addView(subtitle, new LinearLayout.LayoutParams(0,-2,1));
+        if (navigation && signedIn) {
+            Button profile = button(userName.isEmpty() ? "Users" : userName + " ▾", v -> users());
+            profile.setMaxLines(1); profile.setMaxEms(14); profile.setEllipsize(android.text.TextUtils.TruncateAt.END); profile.setContentDescription("Switch user"); header.addView(profile);
+        }
+        chrome.addView(header);
         if (navigation) {
             HorizontalScrollView navScroll = new HorizontalScrollView(this); navScroll.setHorizontalScrollBarEnabled(false);
             LinearLayout nav = new LinearLayout(this); navScroll.addView(nav);
             addButton(nav, "Home", this::dashboard);
             addButton(nav, "Movies", () -> openCategory("movies")); addButton(nav, "Shows", () -> openCategory("shows"));
             addButton(nav, "Favorites", () -> openCategory("favorites")); addButton(nav, "Search", () -> openCategory("all"));
-            addButton(nav, "Settings", this::settings); root.addView(navScroll);
+            addButton(nav, "Settings", this::settings);
+            Button stereo = button("3D only", v -> { threeDOnly = !threeDOnly; prefs.edit().putBoolean("3d_only",threeDOnly).apply(); filterReload.run(); });
+            stereo.setSelected(threeDOnly); stereo.setContentDescription(threeDOnly ? "3D only enabled" : "Show only 3D media");
+            stereo.setBackground(background(threeDOnly ? Color.rgb(17,87,111) : CARD,threeDOnly ? ACCENT : 0));
+            LinearLayout navigationRow = new LinearLayout(this); navigationRow.setGravity(Gravity.CENTER_VERTICAL);
+            navigationRow.addView(navScroll,new LinearLayout.LayoutParams(0,-2,1));
+            LinearLayout.LayoutParams stereoLp = new LinearLayout.LayoutParams(-2,-2); stereoLp.setMargins(dp(8),dp(4),0,dp(4)); navigationRow.addView(stereo,stereoLp);
+            chrome.addView(navigationRow);
         }
         LinearLayout state = new LinearLayout(this); state.setGravity(Gravity.CENTER_VERTICAL);
         spinner = new ProgressBar(this); state.addView(spinner, new LinearLayout.LayoutParams(dp(28), dp(28)));
         status = label("", 16); status.setPadding(dp(10), dp(7), dp(10), dp(7)); state.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
-        retryButton = button("Retry", v -> { if (retryAction != null) retryAction.run(); }); state.addView(retryButton); root.addView(state);
+        retryButton = button("Retry", v -> { if (retryAction != null) retryAction.run(); }); state.addView(retryButton); chrome.addView(state);
         spinner.setVisibility(View.GONE); retryButton.setVisibility(View.GONE);
         body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root); backAction = navigation ? this::dashboard : this::home; retryAction = null;
@@ -149,7 +171,7 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); prefs = getSharedPreferences("app", MODE_PRIVATE); device = prefs.getString("device", null);
         if (device == null) { device = UUID.randomUUID().toString(); prefs.edit().putString("device", device).apply(); }
-        server = prefs.getString("server", "");
+        server = prefs.getString("server", ""); threeDOnly = prefs.getBoolean("3d_only",false);
         if (server.isEmpty()) home(); else connect();
     }
     private void home() {
@@ -170,15 +192,15 @@ public class MainActivity extends Activity {
         page("Connecting", false); loading("Restoring your Jellyfin session…"); retryAction = this::connect;
         addButton(body, "Change server", this::home);
         request("status", null, data -> {
-            prefs.edit().putString("server", server).apply(); signedIn = data.optBoolean("signed_in"); userName = data.optString("user", "");
-            if (signedIn) dashboard(); else pair();
+            prefs.edit().putString("server", server).apply(); signedIn = data.optBoolean("signed_in"); userName = data.optString("user", ""); userId = data.optString("user_id", "");
+            if (signedIn) dashboard(); else users();
         });
     }
     private void pair() {
-        page("Quick Connect", false); int current = generation; LinearLayout content = scrollBody();
+        page("Quick Connect", false); backAction = this::users; int current = generation; LinearLayout content = scrollBody();
         TextView code = heading("Requesting a code…"); code.setTextSize(40); content.addView(code);
         content.addView(label("In a signed-in Jellyfin app, open Settings → Quick Connect and enter this code.", 21));
-        addButton(content, "Change server", this::home); loading("Contacting Jellyfin…"); retryAction = this::pair;
+        addButton(content, "Back to users", this::users); loading("Contacting Jellyfin…"); retryAction = this::pair;
         request("initiate", null, data -> {
             pairingSecret = data.getString("secret"); code.setText(data.getString("code")); loading("Waiting for authorization…"); poll(current);
         });
@@ -187,7 +209,7 @@ public class MainActivity extends Activity {
         ui.postDelayed(() -> {
             if (generation != current || pairingSecret == null) return;
             request("poll", value("secret", pairingSecret), data -> {
-                if (data.optBoolean("authorized")) { signedIn = true; dashboard(); } else poll(current);
+                if (data.optBoolean("authorized")) { resetAccountView(); connect(); } else poll(current);
             });
         }, 3000);
     }
@@ -220,6 +242,59 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
         return image;
     }
+    private void resetAccountView() {
+        posterCache.evictAll(); searchTerm = ""; category = "all"; parentId = ""; currentStart = 0; libraryName = "Library";
+    }
+    private void signedInAs(JSONObject data) {
+        signedIn = true; userName = data.optString("user", ""); userId = data.optString("user_id", "");
+        resetAccountView(); dashboard();
+    }
+    private void users() {
+        stopPlayback(); page("Users", false); backAction = signedIn ? this::dashboard : this::home; retryAction = this::users;
+        LinearLayout content = scrollBody(); ready("Choose an account on this server.");
+        content.addView(heading("On this Quest")); LinearLayout saved = new LinearLayout(this); saved.setOrientation(1); content.addView(saved);
+        request("profiles", null, data -> {
+            JSONArray users = data.getJSONArray("users");
+            if (users.length() == 0) saved.addView(label("No accounts saved yet.",17));
+            for (int i=0;i<users.length();i++) {
+                JSONObject account = users.getJSONObject(i); String name = account.optString("name");
+                addButton(saved, name + (account.optBoolean("current") ? " · Current" : ""), () -> {
+                    loading("Switching to " + name + "…");
+                    request("switch_user", value("target_user",account.optString("id")), this::signedInAs, message -> {
+                        login(name); error(message);
+                    });
+                });
+            }
+        });
+        content.addView(heading("Server users")); LinearLayout available = new LinearLayout(this); available.setOrientation(1); content.addView(available);
+        available.addView(label("Loading users…",17));
+        request("public_users",null,data -> {
+            available.removeAllViews(); JSONArray users = data.getJSONArray("users");
+            if (users.length()==0) available.addView(label("This server hides its user list. Enter a username or use Quick Connect.",17));
+            for (int i=0;i<users.length();i++) { String name=users.getJSONObject(i).optString("name"); addButton(available,name,() -> login(name)); }
+        }, message -> { available.removeAllViews(); available.addView(label("User list unavailable. You can still sign in below.",17)); });
+        addButton(content,"Sign in another account",() -> login(""));
+        addButton(content,"Use Quick Connect",this::pair);
+        addButton(content,"Change server",this::home);
+        if (signedIn) addButton(content,"Back to library",this::dashboard);
+    }
+    private void login(String selectedName) {
+        page("Sign in",false); backAction = this::users;
+        LinearLayout content = scrollBody(); ready("Sign in to a Jellyfin account. Saved accounts can be switched without retyping a password.");
+        content.addView(heading("Sign in to this server"));
+        EditText name = new EditText(this); name.setSingleLine(); name.setHint("Username"); name.setContentDescription("Username"); name.setText(selectedName); name.setTextColor(Color.WHITE); name.setHintTextColor(Color.LTGRAY); content.addView(name);
+        EditText password = new EditText(this); password.setSingleLine(); password.setHint("Password"); password.setContentDescription("Password"); password.setTextColor(Color.WHITE); password.setHintTextColor(Color.LTGRAY);
+        password.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); content.addView(password);
+        Button submit = button("Sign in",null); content.addView(submit);
+        submit.setOnClickListener(v -> {
+            String username = name.getText().toString().trim(); if (username.isEmpty()) { error("Enter your username."); return; }
+            JSONObject credentials = with(value("username",username),"password",password.getText().toString()); password.setText("");
+            ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(password.getWindowToken(),0);
+            submit.setEnabled(false); loading("Signing in…");
+            request("login",credentials,this::signedInAs,message -> { submit.setEnabled(true); error(message); });
+        });
+        addButton(content,"Use Quick Connect",this::pair); addButton(content,"Back to users",this::users);
+    }
     private String itemCaption(JSONObject item) {
         String name = item.optString("name", "Untitled");
         if ("Episode".equals(item.optString("type"))) {
@@ -232,7 +307,7 @@ public class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(7), dp(7), dp(7), dp(10));
         card.setBackground(background(CARD, 0)); card.setFocusable(true); card.setClickable(true);
         card.setContentDescription("Open " + itemCaption(item));
-        card.setOnFocusChangeListener((v, focused) -> v.setBackground(background(CARD, focused ? ACCENT : 0)));
+        card.setOnFocusChangeListener((v, focused) -> v.setBackground(background(v.isSelected() ? Color.rgb(17,87,111) : CARD, focused || v.isSelected() ? ACCENT : 0)));
         card.setOnClickListener(v -> { if ("Series".equals(item.optString("type"))) openSeries(item); else details(item.optString("id")); });
         card.addView(poster(item, current), new LinearLayout.LayoutParams(-1, dp(width * 1.48f)));
         long runtime = item.optLong("runtime"), resume = item.optLong("resume");
@@ -242,6 +317,8 @@ public class MainActivity extends Activity {
         }
         TextView title = label(itemCaption(item), 17); title.setMaxLines(2); title.setPadding(0, dp(7), 0, 0); card.addView(title);
         String meta = item.optInt("year") > 0 ? String.valueOf(item.optInt("year")) : "";
+        String stereoFormat = item.optString("format", "");
+        if (!stereoFormat.isEmpty() && !stereoFormat.equals("null") && !stereoFormat.equals("None")) meta = "3D  ·  " + meta;
         if (item.optBoolean("played")) meta += "  ✓"; if (item.optBoolean("favorite")) meta += "  ♥";
         TextView info = label(meta, 14); info.setTextColor(Color.LTGRAY); card.addView(info); return card;
     }
@@ -255,7 +332,7 @@ public class MainActivity extends Activity {
         parent.addView(scroll);
     }
     private void dashboard() {
-        page("Home", true); backAction = null; retryAction = this::dashboard;
+        page("Home", true); filterReload = this::dashboard; backAction = null; retryAction = this::dashboard;
         LinearLayout content = scrollBody(); ready(userName.isEmpty() ? "Welcome to Jellyfin on Quest" : "Welcome, " + userName);
         content.addView(heading("My Media")); HorizontalScrollView librariesScroll = new HorizontalScrollView(this); LinearLayout libraries = new LinearLayout(this); librariesScroll.addView(libraries); content.addView(librariesScroll);
         ProgressBar libraryLoading = new ProgressBar(this); libraries.addView(libraryLoading, new LinearLayout.LayoutParams(dp(30), dp(30)));
@@ -270,17 +347,17 @@ public class MainActivity extends Activity {
         content.addView(heading("Continue Watching")); LinearLayout resume = new LinearLayout(this); resume.setOrientation(1); content.addView(resume);
         ProgressBar resumeLoading = new ProgressBar(this); resume.addView(resumeLoading, new LinearLayout.LayoutParams(dp(30), dp(30)));
         int current = generation;
-        request("resume", null, data -> { resume.removeAllViews(); rail(resume, data.getJSONArray("items"), current); }, message -> { resume.removeAllViews(); resume.addView(label("Continue Watching unavailable. Use Retry to reload.", 17)); error(message); });
+        request("resume", value("three_d_only",threeDOnly), data -> { resume.removeAllViews(); rail(resume, data.getJSONArray("items"), current); }, message -> { resume.removeAllViews(); resume.addView(label("Continue Watching unavailable. Use Retry to reload.", 17)); error(message); });
         content.addView(heading("Recently Added")); LinearLayout recent = new LinearLayout(this); recent.setOrientation(1); content.addView(recent);
         ProgressBar latestLoading = new ProgressBar(this); recent.addView(latestLoading, new LinearLayout.LayoutParams(dp(30), dp(30)));
-        request("browse", with(value("sort", "latest"), "limit", 16), data -> { recent.removeAllViews(); rail(recent, data.getJSONArray("items"), current); }, message -> { recent.removeAllViews(); error(message); });
+        request("browse", with(with(value("sort", "latest"), "limit", 16),"three_d_only",threeDOnly), data -> { recent.removeAllViews(); rail(recent, data.getJSONArray("items"), current); }, message -> { recent.removeAllViews(); error(message); });
     }
     private void openCategory(String kind) { category = kind; parentId = ""; libraryName = "Library"; searchTerm = ""; browse(0); }
     private void openSeries(JSONObject series) { category = "episodes"; parentId = series.optString("id"); libraryName = series.optString("name"); searchTerm = ""; browse(0); }
     private void browse(int start) {
         currentStart = start;
         String title = !parentId.isEmpty() ? libraryName : category.equals("movies") ? "Movies" : category.equals("shows") ? "Shows" : category.equals("favorites") ? "Favorites" : "Library";
-        page(title, true); retryAction = () -> browse(start); int current = generation;
+        page(title, true); filterReload = () -> browse(0); retryAction = () -> browse(start); int current = generation;
         LinearLayout searchRow = new LinearLayout(this); EditText search = new EditText(this); search.setSingleLine(); search.setTextColor(Color.WHITE); search.setHintTextColor(Color.LTGRAY);
         search.setHint("Search " + title); search.setText(searchTerm); searchRow.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
         addButton(searchRow, "Search", () -> {
@@ -288,9 +365,9 @@ public class MainActivity extends Activity {
         });
         body.addView(searchRow); LinearLayout list = scrollBody(); loading("Loading titles…");
         JSONObject query = with(with(with(value("start", start), "search", searchTerm), "parent", parentId), "kind", category);
-        with(query, "sort", prefs.getString("sort", "name")); if (category.equals("favorites")) with(query, "favorite", true);
+        with(query, "three_d_only",threeDOnly); with(query, "sort", prefs.getString("sort", "name")); if (category.equals("favorites")) with(query, "favorite", true);
         request("browse", query, data -> {
-            JSONArray items = data.getJSONArray("items"); ready(items.length() == 0 ? "No matching titles. Try another search or library." : "Select a title to see details and playback options");
+            JSONArray items = data.getJSONArray("items"); ready(items.length() == 0 ? (threeDOnly ? "No 3D titles found. Check the 3D format in Jellyfin or turn off 3D only." : "No matching titles. Try another search or library.") : "Select a title to see details and playback options");
             int columns = QuestPreferences.columns(prefs.getInt("columns", 5));
             int screenDp = (int)(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
             columns = Math.min(columns, Math.max(2, screenDp / 180));
@@ -383,13 +460,21 @@ public class MainActivity extends Activity {
         activeItem = item; activeMethod = data.optString("method", "DirectPlay"); activeSource = data.getString("source"); activeSession = data.isNull("session") ? null : data.getString("session");
         long resumeMs = data.optLong("resume") / 10000L; page(data.optString("title", "Now playing"), false); int current = generation;
         backAction = () -> { stopPlayback(); details(item); }; retryAction = () -> { stopPlayback(); try { playback(item, data); } catch (Exception e) { error("Could not reopen video."); } };
-        LinearLayout actions = new LinearLayout(this); addButton(actions, "Back to title", backAction); addButton(actions, "Audio", () -> tracks(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO)); addButton(actions, "Subtitles", () -> tracks(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE)); body.addView(actions);
+        playbackPage = true; chromePolicy.interact(SystemClock.uptimeMillis());
+        // Chrome overlays the video, so hiding it never resizes the decoder surface.
+        root.removeView(chrome); root.removeView(body); root.setPadding(0,0,0,0);
+        FrameLayout stage = new FrameLayout(this); root.addView(stage,new LinearLayout.LayoutParams(-1,-1));
+        stage.addView(body,new FrameLayout.LayoutParams(-1,-1));
+        chrome.setPadding(dp(24),dp(14),dp(24),dp(10));
+        chrome.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xF8101118,0xE8101118,0x90101118}));
+        stage.addView(chrome,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
+        LinearLayout actions = new LinearLayout(this); addButton(actions, "Back to title", backAction); addButton(actions, "Audio", () -> tracks(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO)); addButton(actions, "Subtitles", () -> tracks(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE)); chrome.addView(actions);
         FrameLayout frame = new FrameLayout(this); body.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1));
         video = new VideoView(this); FrameLayout.LayoutParams videoLp = new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER); frame.addView(video, videoLp);
         videoLoading = new FrameLayout(this); videoLoading.setBackgroundColor(0xB0101118);
         LinearLayout load = new LinearLayout(this); load.setOrientation(1); load.setGravity(Gravity.CENTER); load.addView(new ProgressBar(this)); load.addView(label("Opening video…", 22));
         videoLoading.addView(load, new FrameLayout.LayoutParams(-1, -1)); frame.addView(videoLoading, new FrameLayout.LayoutParams(-1, -1));
-        MediaController controls = new MediaController(this); controls.setAnchorView(video); video.setMediaController(controls);
+        panelControls = new MediaController(this); panelControls.setAnchorView(video); video.setMediaController(panelControls);
         video.setOnPreparedListener(mp -> {
             if (current != generation || video == null) return; panelPlayer = mp;
             if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) video.seekTo((int)resumeMs); video.start();
@@ -406,7 +491,7 @@ public class MainActivity extends Activity {
         video.setOnCompletionListener(mp -> { stopPlayback(); details(item); });
         video.setOnErrorListener((mp, what, extra) -> { stopPlayback(); if (videoLoading != null) videoLoading.setVisibility(View.GONE); error("This device could not play the selected source (" + what + ", " + extra + ")."); return true; });
         loading("Opening video…"); HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
-        video.setVideoURI(Uri.parse(data.getString("url")), headers);
+        video.setVideoURI(Uri.parse(data.getString("url")), headers); ui.post(chromeTick);
         ui.postDelayed(() -> { if (generation == current && video != null && !started) error("Video is taking longer than expected. You can retry or go back."); }, 20000);
     }
     private void tracks(int type) {
@@ -426,6 +511,49 @@ public class MainActivity extends Activity {
                 }).setNegativeButton("Cancel", null).show();
         } catch (RuntimeException e) { error("Track selection is unavailable for this source."); }
     }
+    private final Runnable chromeTick = new Runnable() {
+        @Override public void run() {
+            if (!playbackPage || video == null || isDestroyed()) return;
+            boolean playing = started && video.isPlaying() && videoLoading.getVisibility() == View.GONE && hasWindowFocus();
+            boolean visible = chromePolicy.visible(SystemClock.uptimeMillis(),playing,touchingPlayer || hoveringChrome);
+            setChromeVisible(visible); ui.postDelayed(this,200);
+        }
+    };
+    private void setChromeVisible(boolean visible) {
+        if (!playbackPage) return;
+        if (visible) {
+            chrome.animate().cancel(); chrome.setVisibility(View.VISIBLE); chrome.setAlpha(1f);
+        } else if (chrome.getVisibility() == View.VISIBLE && chrome.getAlpha() == 1f) {
+            LinearLayout fading = chrome;
+            fading.animate().alpha(0f).setDuration(180).withEndAction(() -> fading.setVisibility(View.GONE)).start();
+        }
+    }
+    private void revealChrome() { if (playbackPage) { chromePolicy.interact(SystemClock.uptimeMillis()); setChromeVisible(true); } }
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (playbackPage) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                touchingPlayer = true; revealingChromeTouch = chrome.getVisibility() != View.VISIBLE || chrome.getAlpha() < 1f;
+                revealChrome(); if (revealingChromeTouch && panelControls != null) panelControls.show();
+            }
+            else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) { touchingPlayer = false; chromePolicy.interact(SystemClock.uptimeMillis()); }
+        }
+        if (revealingChromeTouch) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) revealingChromeTouch = false;
+            return true;
+        }
+        return super.dispatchTouchEvent(event);
+    }
+    @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (playbackPage) {
+            hoveringChrome = event.getActionMasked() != MotionEvent.ACTION_HOVER_EXIT && chrome.getVisibility() == View.VISIBLE && event.getY() >= 0 && event.getY() <= chrome.getHeight();
+            if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER || event.getActionMasked() == MotionEvent.ACTION_SCROLL) revealChrome();
+        }
+        return super.dispatchGenericMotionEvent(event);
+    }
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) revealChrome();
+        return super.dispatchKeyEvent(event);
+    }
     private void progress(int current) {
         ui.postDelayed(() -> {
             if (current != generation || video == null || !started) return;
@@ -433,6 +561,8 @@ public class MainActivity extends Activity {
         }, 10000);
     }
     private void stopPlayback() {
+        if (playbackPage) { chrome.animate().cancel(); chrome.setVisibility(View.VISIBLE); chrome.setAlpha(1f); }
+        playbackPage = false; ui.removeCallbacks(chromeTick); if (panelControls != null) { panelControls.hide(); panelControls = null; }
         if (video != null) { if (started) lastPosition = video.getCurrentPosition(); video.stopPlayback(); video = null; panelPlayer = null; }
         if (started) { request("stop", playbackData(lastPosition * 10000L), d -> {}, message -> {}); started = false; }
     }
@@ -469,12 +599,13 @@ public class MainActivity extends Activity {
         for (int n = 3; n <= 6; n++) { final int value = n; RadioButton b = new RadioButton(this); b.setText(n + " columns"); b.setTextSize(18); b.setTextColor(Color.WHITE); b.setMinHeight(dp(48)); b.setChecked(n == count); b.setOnClickListener(v -> prefs.edit().putInt("columns", value).apply()); columns.addView(b); } content.addView(columns);
         content.addView(heading("Account & server")); content.addView(label((userName.isEmpty() ? "Jellyfin account" : userName) + "\n" + server, 18));
         addButton(content, "Change server", this::home);
-        if (signedIn) addButton(content, "Sign out", () -> { loading("Signing out…"); request("signout", null, d -> { signedIn = false; userName = ""; posterCache.evictAll(); home(); }); });
+        if (signedIn) addButton(content,"Switch user",this::users);
+        if (signedIn) addButton(content, "Sign out", () -> { loading("Signing out…"); request("signout", null, d -> { signedIn = false; userName = ""; userId = ""; resetAccountView(); users(); }); });
         addButton(content, "Clear cached artwork", () -> { posterCache.evictAll(); ready("Artwork cache cleared."); });
         content.addView(heading("About")); content.addView(label("Jellyfin 3D for Quest · 0.1.0\nIndependent native Jellyfin client using DeskQuest XR components.\nStereo cinema supports mono, SBS and over-under. MVC, MV-HEVC and immersive subtitles are still unavailable.", 16));
         addButton(content, "Back", signedIn ? this::dashboard : this::home);
     }
     @Override public void onBackPressed() { if (backAction != null) backAction.run(); else super.onBackPressed(); }
     @Override protected void onStop() { super.onStop(); if (video != null) { String item = activeItem; stopPlayback(); details(item); } }
-    @Override protected void onDestroy() { generation++; io.shutdown(); reads.shutdownNow(); images.shutdownNow(); posterCache.evictAll(); super.onDestroy(); }
+    @Override protected void onDestroy() { generation++; ui.removeCallbacks(chromeTick); io.shutdown(); reads.shutdownNow(); images.shutdownNow(); posterCache.evictAll(); super.onDestroy(); }
 }

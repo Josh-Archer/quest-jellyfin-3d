@@ -303,7 +303,7 @@ public class VrActivity extends Activity {
     private void report(String action, boolean paused) {
         try {
             JSONObject req = new JSONObject().put("action", action).put("server", server).put("device", device)
-                .put("store", getFilesDir().getAbsolutePath() + "/jellyfin-session.json")
+                .put("store", getFilesDir().getAbsolutePath() + "/jellyfin-session.json").put("user_id",data.optString("user_id",""))
                 .put("item", item).put("source", data.getString("source")).put("session", data.opt("session"))
                 .put("ticks", lastTicks).put("paused", paused).put("method", data.optString("method", "DirectPlay"));
             String raw = req.toString(); reports.execute(() -> MainActivity.nativeRequest(raw));
