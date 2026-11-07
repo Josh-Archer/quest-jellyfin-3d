@@ -164,7 +164,7 @@ async fn quest_decode_cap_overrides_server_direct_play_and_reports_why() {
         .await;
     Mock::given(method("POST"))
         .and(path("/Items/movie/PlaybackInfo"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"source","SupportsDirectPlay":true,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/movie/master.m3u8","MediaStreams":[{"Type":"Video","Codec":"hevc","Width":7680,"Height":4320,"RealFrameRate":30.1}]}]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"source","SupportsDirectPlay":true,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/movie/master.m3u8","MediaStreams":[{"Type":"Video","Codec":"hevc","Width":7680,"Height":4320,"RealFrameRate":60.0}]}]})))
         .mount(&server)
         .await;
     let prepared = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"})).await.unwrap();
@@ -177,6 +177,29 @@ async fn quest_decode_cap_overrides_server_direct_play_and_reports_why() {
         .as_str()
         .unwrap()
         .contains("8K30 hardware cap"));
+    let direct = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie","hardware_hevc_8k60":true})).await.unwrap();
+    assert_eq!(direct["method"], "DirectPlay");
+    assert_eq!(direct["width"], 7680);
+    assert_eq!(direct["height"], 4320);
+    let requests = server.received_requests().await.unwrap();
+    let sent = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().ends_with("PlaybackInfo"))
+        .unwrap()
+        .body_json::<Value>()
+        .unwrap();
+    let codec = sent["DeviceProfile"]["CodecProfiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["Codec"] == "hevc")
+        .unwrap();
+    assert!(codec["Conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["Property"] == "VideoFramerate" && c["Value"] == "60"));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

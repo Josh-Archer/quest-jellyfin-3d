@@ -22,10 +22,13 @@ pub enum Button {
     Recenter,
     Hide,
     Screen,
+    SwapEyes,
+    ComfortMono,
 }
 
-pub const MAIN_HEIGHT: i32 = 96;
-pub const TOOLS_HEIGHT: i32 = 160;
+pub const ARTWORK_WIDTH: i32 = 768;
+pub const MAIN_HEIGHT: i32 = 200;
+pub const TOOLS_HEIGHT: i32 = 392;
 pub fn artwork_height(tools: bool) -> i32 {
     if tools {
         TOOLS_HEIGHT
@@ -39,42 +42,54 @@ pub fn button_at((u, v): (f32, f32), tools: bool) -> Option<Button> {
     if !u.is_finite() || !v.is_finite() || !(0.0..1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
         return None;
     }
-    let x = u * 512.0;
+    let x = u * ARTWORK_WIDTH as f32;
     let mut y = v * artwork_height(tools) as f32;
-    if tools && (24.0..60.0).contains(&y) {
-        let column = (x / 102.4) as usize;
-        let local = x - column as f32 * 102.4;
-        return (6.0..96.4).contains(&local).then(|| {
-            [
-                Button::Smaller,
-                Button::Larger,
-                Button::Flatter,
-                Button::Curvier,
-                Button::Recenter,
-            ][column]
-        });
+    if tools && (42.0..102.0).contains(&y) {
+        for (i, button) in [
+            Button::Smaller,
+            Button::Larger,
+            Button::Flatter,
+            Button::Curvier,
+            Button::Recenter,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let left = 24.0 + i as f32 * 146.4;
+            if (left..left + 134.4).contains(&x) {
+                return Some(button);
+            }
+        }
+    }
+    if tools && (116.0..176.0).contains(&y) {
+        if (24.0..224.0).contains(&x) {
+            return Some(Button::ComfortMono);
+        }
+        if (240.0..440.0).contains(&x) {
+            return Some(Button::SwapEyes);
+        }
     }
     if tools {
-        y -= 64.0;
+        y -= 192.0;
     }
-    if (24.0..44.0).contains(&y) && (16.0..=496.0).contains(&x) {
-        return Some(Button::Seek(((x - 16.0) / 480.0 * 1000.0).round() as u16));
+    if (64.0..112.0).contains(&y) && (24.0..=744.0).contains(&x) {
+        return Some(Button::Seek(((x - 24.0) / 720.0 * 1000.0).round() as u16));
     }
-    if (0.0..24.0).contains(&y) && (468.0..508.0).contains(&x) {
+    if (8.0..68.0).contains(&y) && (696.0..756.0).contains(&x) {
         return Some(Button::Exit);
     }
-    if (46.0..92.0).contains(&y) {
+    if (120.0..184.0).contains(&y) {
         return [
-            (16.0, 64.0, Button::PlayPause),
-            (74.0, 118.0, Button::Back),
-            (124.0, 168.0, Button::Forward),
-            (286.0, 358.0, Button::Audio),
-            (364.0, 448.0, Button::Screen),
-            (460.0, 508.0, Button::Hide),
+            (24.0, 88.0, Button::PlayPause),
+            (108.0, 168.0, Button::Back),
+            (180.0, 240.0, Button::Forward),
+            (440.0, 552.0, Button::Audio),
+            (568.0, 680.0, Button::Screen),
+            (696.0, 756.0, Button::Hide),
         ]
         .into_iter()
         .find(|(left, right, _)| (*left..*right).contains(&x))
-        .map(|(_, _, button)| button);
+        .map(|(_, _, b)| b);
     }
     None
 }
@@ -95,6 +110,8 @@ impl Button {
             Self::Curvier => 10,
             Self::Recenter => 11,
             Self::Seek(_) => 12,
+            Self::SwapEyes => 13,
+            Self::ComfortMono => 14,
         }
     }
 }
@@ -103,8 +120,9 @@ impl Button {
 /// segment with the same axis, 4 mm towards the viewer, so drawing and ray hits agree.
 pub fn panel_transform(screen: &ScreenTransform, tools: bool) -> ScreenTransform {
     let (width, height) = screen.size_m();
-    let panel_width = width * 0.9;
-    let panel_height = (panel_width * artwork_height(tools) as f32 / 512.0).min(height * 0.84);
+    let panel_width = (width * 0.9).min(2.8);
+    let panel_height =
+        (panel_width * artwork_height(tools) as f32 / ARTWORK_WIDTH as f32).min(height * 0.84);
     let centre_v = 0.94 - panel_height / (2.0 * height);
     let at = screen.surface_pose(0.5, centre_v);
     let mut panel = screen.clone();
@@ -112,7 +130,7 @@ pub fn panel_transform(screen: &ScreenTransform, tools: bool) -> ScreenTransform
     panel.quad_size = (panel_width, panel_height);
     if screen.display_mode == DisplayMode::CurvedCylinder {
         panel.curve_radius = screen.curve_radius - 0.004;
-        panel.curve_angle = screen.curve_angle * 0.9;
+        panel.curve_angle = screen.curve_angle * (panel_width / width);
         panel.aspect_ratio = panel.curve_radius * panel.curve_angle / panel_height;
     }
     panel
@@ -344,16 +362,16 @@ mod tests {
         for tools in [false, true] {
             let h = artwork_height(tools) as f32;
             for (x, button) in [
-                (40.0, Button::PlayPause),
-                (96.0, Button::Back),
-                (146.0, Button::Forward),
-                (322.0, Button::Audio),
-                (406.0, Button::Screen),
-                (484.0, Button::Hide),
+                (56.0, Button::PlayPause),
+                (138.0, Button::Back),
+                (210.0, Button::Forward),
+                (496.0, Button::Audio),
+                (624.0, Button::Screen),
+                (726.0, Button::Hide),
             ] {
                 assert_eq!(
                     button_at(
-                        (x / 512.0, (69.0 + if tools { 64.0 } else { 0.0 }) / h),
+                        (x / 768.0, (152.0 + if tools { 192.0 } else { 0.0 }) / h),
                         tools
                     ),
                     Some(button)
@@ -361,7 +379,7 @@ mod tests {
             }
             assert_eq!(
                 button_at(
-                    (488.0 / 512.0, (12.0 + if tools { 64.0 } else { 0.0 }) / h),
+                    (726.0 / 768.0, (38.0 + if tools { 192.0 } else { 0.0 }) / h),
                     tools
                 ),
                 Some(Button::Exit)
@@ -386,7 +404,7 @@ mod tests {
         .enumerate()
         {
             assert_eq!(
-                button_at(((column as f32 + 0.5) / 5.0, 42.0 / 160.0), true),
+                button_at(((91.2 + column as f32 * 146.4) / 768.0, 72.0 / 392.0), true),
                 Some(button)
             );
         }
@@ -401,7 +419,7 @@ mod tests {
             }
             let original = screen.clone();
             let at = panel_transform(&screen, false)
-                .surface_pose(40.0 / 512.0, 69.0 / 96.0)
+                .surface_pose(56.0 / 768.0, 152.0 / 200.0)
                 .position;
             let mut pointer = input(at, false);
             pointer.is_grabbing = true;
@@ -512,11 +530,11 @@ mod tests {
     #[test]
     fn timeline_seek_is_bounded_and_curvature_survives_shared_clamping() {
         assert_eq!(
-            button_at((16.0 / 512.0, 34.0 / 96.0), false),
+            button_at((24.0 / 768.0, 87.0 / 200.0), false),
             Some(Button::Seek(0))
         );
         assert_eq!(
-            button_at((496.0 / 512.0, 34.0 / 96.0), false),
+            button_at((744.0 / 768.0, 87.0 / 200.0), false),
             Some(Button::Seek(1000))
         );
         let mut s = screen();
@@ -605,7 +623,7 @@ mod tests {
         let mut c = ScreenControls::default();
         let mut movie = screen();
         let target = panel_transform(&movie, false)
-            .surface_pose(406.0 / 512.0, 69.0 / 96.0)
+            .surface_pose(624.0 / 768.0, 152.0 / 200.0)
             .position;
         let mut pointer = input(target, false);
         let turned = ScreenPose::new(head().position, Quat::from_euler(0.1, 0.9, 0.0));

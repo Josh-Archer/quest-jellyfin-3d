@@ -12,3 +12,5 @@ javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/PlaybackGate.java" "$HERE
 java -cp "$OUT" org.questjellyfin.player.PlaybackGateTest
 javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/PlaybackChrome.java" "$HERE/PlaybackChromeTest.java"
 java -cp "$OUT" org.questjellyfin.player.PlaybackChromeTest
+javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/VideoPresentation.java" "$HERE/VideoPresentationTest.java"
+java -cp "$OUT" org.questjellyfin.player.VideoPresentationTest
