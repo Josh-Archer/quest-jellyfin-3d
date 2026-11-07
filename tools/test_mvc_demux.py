@@ -2,7 +2,7 @@
 import io
 import unittest
 from mvc_demux import demux, pes_payload
-from prepare_mvc import pixel_hashes
+from prepare_mvc import pixel_hashes, validate_decode_evidence
 import tempfile
 from pathlib import Path
 
@@ -66,6 +66,14 @@ class DemuxTest(unittest.TestCase):
             demux(io.BytesIO(fixture()), io.BytesIO(), 0x1011, 0x1011)
         with self.assertRaises(ValueError):
             pes_payload(b'\0' * 20)
+
+    def test_only_complete_guarded_decoder_evidence_is_accepted(self):
+        paired = "Matched MVC access-unit pairs: 100"
+        validate_decode_evidence(100, paired, "Strict stereo frames: 100")
+        for count, demux, decoder in [(100,paired,""), (100,paired,"Strict stereo frames: 99"),
+                                       (99,paired,"Strict stereo frames: 99"), (0,paired,"")]:
+            with self.assertRaises(RuntimeError):
+                validate_decode_evidence(count,demux,decoder)
 
     def test_frame_verification_ignores_container_timebase_but_reads_every_digest(self):
         with tempfile.TemporaryDirectory() as directory:

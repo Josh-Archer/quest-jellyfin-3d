@@ -7,14 +7,18 @@ exposes only the AVC base view and is not an MVC-to-stereo converter.
 
 Requirements: Python 3.9+, FFmpeg/ffprobe with `hevc_nvenc`, a supported NVIDIA GPU,
 and the BSD-licensed [edge264-mvc](https://github.com/jens-duttke/edge264-mvc) decoder.
-Build the tested decoder revision in a scratch directory:
+Build the tested decoder revision in a new scratch directory:
 
 ```sh
-git clone https://github.com/jens-duttke/edge264-mvc.git
-cd edge264-mvc
-git checkout 515a7ba9afd945387d41c118404c2ee9dbaf6b83
-make -j8 VARIANTS= BUILDTEST=yes
+python3 tools/build_mvc_decoder.py /scratch/edge264-mvc
 ```
+
+The builder pins revision `515a7ba9afd945387d41c118404c2ee9dbaf6b83` and adds
+an opt-in `-Q` guard. The upstream example tool can duplicate the base eye when
+a decoded dependent eye is missing; that fallback is unsuitable for verified
+stereo preparation. The guarded build rejects such a frame and reports the exact
+number of frames with both decoded views. Preparation requires that evidence in
+addition to matching transport timestamps and pixel checksums.
 
 Use a new work directory for each run. First prepare a short validation sample
 outside the library, then run the complete conversion without `--seconds`:
