@@ -33,6 +33,13 @@ class DemuxTest(unittest.TestCase):
             self.assertEqual(demux(io.BytesIO(fixture(m2ts)), out, 0x1011, 0x1012), 3)
             self.assertEqual(out.getvalue(), b'L\0R\0L\1R\1L\2R\2')
 
+    def test_raw_ts_adaptation_length_cannot_masquerade_as_m2ts_sync(self):
+        data = packet(0x1011, 0, 0, b'L' * 98, False) + packet(0x1012, 0, 0, b'R' * 98, False)
+        self.assertEqual(data[4], 0x47)
+        out = io.BytesIO()
+        self.assertEqual(demux(io.BytesIO(data), out, 0x1011, 0x1012), 1)
+        self.assertEqual(out.getvalue(), b'L' * 98 + b'R' * 98)
+
     def test_sample_is_bounded_at_pair_boundary(self):
         out = io.BytesIO()
         self.assertEqual(demux(io.BytesIO(fixture()), out, 0x1011, 0x1012, .04), 1)

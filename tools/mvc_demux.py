@@ -32,10 +32,10 @@ def demux(source, output, base_pid, dependent_pid, seconds=None):
         raise ValueError("MVC needs two distinct view PIDs")
     buffers, counters, ready = {}, {}, {}
     first_dts, last_dts, pairs = None, None, 0
-    prefix = source.read(192)
+    prefix = source.read(392)
     if len(prefix) < 192:
         raise ValueError("Empty or truncated transport stream")
-    if prefix[4] == 0x47:
+    if len(prefix) > 196 and prefix[4] == 0x47 and prefix[196] == 0x47:
         packet_size, offset = 192, 4
     elif prefix[0] == 0x47 and prefix[188] == 0x47:
         packet_size, offset = 188, 0
