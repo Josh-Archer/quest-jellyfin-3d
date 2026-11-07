@@ -269,7 +269,7 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .map(|n| n.clamp(4_000_000, 120_000_000));
             let allow_transcoding = v["allow_transcoding"].as_bool().unwrap_or(true);
             let profile = quest_device_profile();
-            let info = client
+            let mut info = client
                 .playback_info_with_policy(
                     id,
                     Some(profile.clone()),
@@ -280,6 +280,37 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
             if let Some(err) = info.error_code {
                 return Err(format!("Jellyfin rejected playback: {err}"));
+            }
+            // An MVC item may have a verified full-SBS alternate version prepared on the NAS.
+            // Select the packed source before resolution; never relabel the MVC base view as SBS.
+            let has_mvc_source = quest_jellyfin_player::detect_item_format(&item).format
+                == quest_jellyfin_player::StereoFormat::Mvc
+                || info.media_sources.iter().any(|source| {
+                    quest_jellyfin_player::detect_item_format(&jellyfin_client::BaseItem {
+                        path: source.path.clone(),
+                        ..Default::default()
+                    })
+                    .format
+                        == quest_jellyfin_player::StereoFormat::Mvc
+                });
+            if has_mvc_source {
+                let packed_sources: Vec<_> = info
+                    .media_sources
+                    .iter()
+                    .filter(|source| {
+                        let candidate = jellyfin_client::BaseItem {
+                            path: source.path.clone(),
+                            ..Default::default()
+                        };
+                        quest_jellyfin_player::is_packed_stereo(
+                            quest_jellyfin_player::detect_item_format(&candidate).format,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                if !packed_sources.is_empty() {
+                    info.media_sources = packed_sources;
+                }
             }
             let mut resolved = jellyfin_client::resolve_playback(client.base_url(), id, &info)
                 .map_err(|e| e.to_string())?;
@@ -309,6 +340,17 @@ pub async fn run(v: Value) -> Result<Value, String> {
             }
             if let Some(path) = &source.path {
                 source_item.path = Some(path.clone());
+                let candidate = jellyfin_client::BaseItem {
+                    path: Some(path.clone()),
+                    ..Default::default()
+                };
+                if has_mvc_source
+                    && quest_jellyfin_player::is_packed_stereo(
+                        quest_jellyfin_player::detect_item_format(&candidate).format,
+                    )
+                {
+                    source_item.video_3d_format = None;
+                }
             }
             let decision = evaluate_direct_play(&profile, &source_item);
             if let jellyfin_client::DirectPlayDecision::TranscodeRequired { reason: cap_reason } =
@@ -344,6 +386,9 @@ pub async fn run(v: Value) -> Result<Value, String> {
                     reason = cap_reason;
                 }
             }
+            if !allow_transcoding && resolved.method == jellyfin_client::PlayMethod::Transcode {
+                return Err("This source requires server transcoding. Enable it in Playback settings or choose another source.".into());
+            }
             let url = &resolved.url;
             let token = client.access_token().ok_or("Not signed in")?;
             let authorization =
@@ -362,12 +407,36 @@ pub async fn run(v: Value) -> Result<Value, String> {
             let width = stream.and_then(|s| s.width).filter(|v| *v > 0);
             let height = stream.and_then(|s| s.height).filter(|v| *v > 0);
             let format = quest_jellyfin_player::detect_item_format(&source_item);
+            let tags = crate::server_api::spatial_tags(&client, id)
+                .await
+                .unwrap_or_default();
+            let per_eye_aspect = match (width, height) {
+                (Some(w), Some(h)) => quest_jellyfin_player::build_stereo_eye_layer_specs(
+                    format.format,
+                    format.eye_order,
+                    w as u32,
+                    h as u32,
+                )
+                .ok()
+                .and_then(|s| {
+                    s.first()
+                        .map(|s| s.sub_image_rect.width as f32 / s.sub_image_rect.height as f32)
+                })
+                .unwrap_or(1.0),
+                _ => 1.0,
+            };
+            let projection = quest_jellyfin_player::projection::resolve_projection(
+                v["projection"].as_str().unwrap_or("Auto"),
+                format.projection,
+                &tags,
+                per_eye_aspect,
+            );
             let resume = item
                 .user_data
                 .as_ref()
                 .map_or(0, |d| d.playback_position_ticks.max(0));
             Ok(
-                json!({"user_id":client.session().map(|s| s.user_id),"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",format.projection),"width":width,"height":height}),
+                json!({"user_id":client.session().map(|s| s.user_id),"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",projection),"width":width,"height":height}),
             )
         }
         "start" | "progress" | "stop" => {

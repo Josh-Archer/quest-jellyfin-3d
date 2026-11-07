@@ -18,9 +18,35 @@ The app resumes from Jellyfin's saved position and reports playback start, perio
 
 A connected-Quest smoke suite verifies artwork reaching image views, home and library navigation, details, favorites, panel-video first-frame events, settings persistence and series navigation using an isolated test installation and mock server. It also verifies a distinct VR task on the headset display, successful video-layer submission, and return to the library panel. It captures screenshots for UI inspection and removes its test packages afterward. This does not establish real-library picture quality or immersive visibility. The user's real server has working panel playback; the earlier immersive view had audio with a black screen. A diagnostic run reproduced zero submitted layers while tracking was unavailable; the VR activity also shared a resizable panel task and remained in the VISIBLE session state. After separating the tasks and adding the view-space fallback, the connected-Quest test reached FOCUSED and submitted video layers. The user subsequently confirmed that the picture appears. This release adds controls and screen manipulation; physical gesture, loft appearance, stereo-quality and headset-removal checks remain separate from the automated submission tests.
 
-This is an independent native client with familiar Jellyfin browsing flows, not full feature parity with Jellyfin's official clients. Live TV, downloads, casting, playlists, 360/180 and fisheye projection, MVC/MV-HEVC and immersive subtitles remain unimplemented. Unsupported projection and multiview formats are not offered in cinema. Ordinary HEVC support does not imply multiview decoding. Keycloak/OIDC code is experimental and not connected to the app.
+This is an independent native client with familiar Jellyfin browsing flows, not full feature parity with Jellyfin's official clients. Live TV, downloads, casting, playlists, fisheye projection, native MVC/MV-HEVC decoding and immersive subtitles remain unimplemented. Unsupported projection and multiview formats are not offered in cinema. Ordinary HEVC support does not imply multiview decoding. Keycloak/OIDC code is experimental and not connected to the app.
 
 Quick Connect tokens are kept in the application's private, backup-excluded storage and bound to the server URL and device identity. Video requests use an authorization header rather than placing the token in the URL. Prefer HTTPS when connecting outside a trusted network; HTTP is supported for local servers and sends credentials without transport encryption.
+
+## VR180, VR360 and MVC sources
+
+Equirectangular VR180 and VR360 use native OpenXR spherical layers with independent
+left/right eye crops. The decoded resolution is preserved. Playback offers Cinema
+screen, VR180 and VR360 choices and remembers the choice per title. Filename hints
+and explicit Jellyfin `VR180`/`VR360` tags select coverage. An `Equirectangular` tag
+uses per-eye aspect as an initial coverage estimate; choose 180/360 if necessary.
+Ordinary movies are never classified as VR from resolution alone.
+
+In VR, click or pinch to reveal transport controls. **View** provides tilt,
+180/360 coverage and Recenter. Moving the controls does not rotate the panorama.
+Headset/focus loss pauses playback and requires an explicit Play to resume.
+Flat movies retain their movable, resizable and curved cinema screens.
+
+Blu-ray MVC requires a prepared packed-stereo alternate; ordinary server
+transcoding cannot reconstruct the dependent eye. The [preparation tool](tools/README.md)
+decodes both views and verifies every losslessly encoded stereo frame. The app
+selects a packed alternate over the original MVC stream. Preparation retains the
+original file. Native MVC and MV-HEVC decoding remain unsupported.
+
+Jellyfin's 3D filter requires server metadata. For a confirmed full-SBS source,
+a file-specific NFO can set `<fileinfo><streamdetails><video><format3d>FSBS</format3d>`
+(with matching closing elements) and `<tag>Equirectangular</tag>`. Refresh the item
+in Jellyfin after adding the sidecar. Do not label a file stereo solely from its
+name or dimensions.
 
 ## Library and accounts
 
@@ -57,6 +83,7 @@ cargo fmt --all -- --check
 cargo build --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+python3 -m unittest discover -s tools -p 'test_*.py'
 crates/quest-app/android/tests/run.sh
 crates/quest-app/android/build.sh
 # Optional, with an awake developer-mode Quest attached; requires ffmpeg:
@@ -71,4 +98,4 @@ The automated tests include a mock API flow for pairing, library browsing, playb
 
 The [project roadmap](https://github.com/Josh-Archer/quest-jellyfin-3d/issues/2) tracks Jellyfin integration, stereoscopic playback, immersive projections, subtitles and audio, MV-HEVC, server conversion, and remote playback.
 
-Device verification: `crates/quest-app/android/tests/device-smoke.sh` uses isolated packages and a local fixture server. It checks all three environments, stereo cylinder submission, transport submission, play/pause/precise seek/audio/exit, and real MediaPlayer response to injected focus callbacks. The Rust tests simulate controller and hand screen dragging, corner resizing, tracking loss, transport hit testing and curvature geometry. These checks do not replace wearer validation of gestures, visible composition, comfort or the physical headset-removal sensor path.
+Device verification: `crates/quest-app/android/tests/device-smoke.sh` uses isolated packages and a local fixture server. It checks all three environments, stereo cylinder and VR180/VR360 equirectangular submission, transport submission, play/pause/precise seek/audio/exit, and real MediaPlayer response to injected focus callbacks. The Rust tests simulate controller and hand screen dragging, corner resizing, tracking loss, transport hit testing and curvature geometry. These checks do not replace wearer validation of gestures, visible composition, comfort or the physical headset-removal sensor path.

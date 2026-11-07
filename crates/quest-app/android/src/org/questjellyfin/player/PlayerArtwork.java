@@ -9,7 +9,7 @@ final class PlayerArtwork {
     private static final int WHITE = Color.rgb(245, 247, 252);
     private static final int ACCENT = Color.rgb(0, 164, 220);
     static byte[] pixels(String title, String status, String time, String audio, String screen,
-                         boolean playing, boolean loading, float progressValue, int hovered, boolean tools, float opacity) {
+                         boolean playing, boolean spherical, boolean loading, float progressValue, int hovered, boolean tools, float opacity) {
         Bitmap image = Bitmap.createBitmap(512, 256, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(image);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -36,7 +36,7 @@ final class PlayerArtwork {
         p.setTextAlign(Paint.Align.LEFT); p.setTypeface(Typeface.MONOSPACE); p.setTextSize(11); p.setColor(0xFFDDE5F0);
         c.drawText(time, 181, 73, p); p.setTypeface(Typeface.DEFAULT);
         pill(c,p,286,358,audio,hovered==3,false);
-        pill(c,p,364,448,"Screen",hovered==5,tools);
+        pill(c,p,364,448,spherical ? "View" : "Screen",hovered==5,tools);
         highlight(c,p,hovered==6,464,49,504,89);
         p.setColor(0xFFDDE5F0); p.setStrokeWidth(2); c.drawLine(477,65,484,72,p); c.drawLine(484,72,491,65,p);
         if (loading) {
@@ -47,8 +47,8 @@ final class PlayerArtwork {
         if (tools) {
             p.setColor(0x28FFFFFF); c.drawRect(16,63,496,64,p);
             p.setColor(0xBBDCE5F2); p.setTextSize(11); p.setTextAlign(Paint.Align.LEFT);
-            c.drawText("SCREEN  ·  " + screen + "  ·  Grip / pinch edges; drag corners",16,16,p);
-            String[] names = {"Smaller","Larger","Flatter","Curve +","Recenter"};
+            c.drawText(spherical ? "VR VIEW  ·  Move controls by their edges; Recenter resets your view" : "SCREEN  ·  " + screen + "  ·  Grip / pinch edges; drag corners",16,16,p);
+            String[] names = spherical ? new String[]{"Tilt −","Tilt +","180°","360°","Recenter"} : new String[]{"Smaller","Larger","Flatter","Curve +","Recenter"};
             for (int i=0;i<5;i++) {
                 float left=i*102.4f+6;
                 p.setColor(hovered==i+7 ? 0x663FAFD5 : 0x22FFFFFF); c.drawRoundRect(left,24,left+90.4f,60,7,7,p);

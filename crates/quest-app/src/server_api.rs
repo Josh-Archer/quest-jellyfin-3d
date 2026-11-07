@@ -170,3 +170,25 @@ pub async fn stereo_items(
             .ok_or("Jellyfin omitted the title count.")?,
     })
 }
+
+/// Jellyfin Tags carry explicit projection hints; absent hints do not turn ordinary movies into VR.
+pub async fn spatial_tags(client: &JellyfinClient, item: &str) -> Result<Vec<String>, String> {
+    let user = client
+        .session()
+        .ok_or("Sign in to read video metadata.")?
+        .user_id;
+    let mut url = reqwest::Url::parse("http://localhost/").expect("constant URL");
+    url.path_segments_mut()
+        .expect("constant hierarchical URL")
+        .extend(["Users", &user, "Items", item]);
+    let data = request(client, Method::GET, url.path(), &[], None, true).await?;
+    Ok(data["Tags"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default())
+}

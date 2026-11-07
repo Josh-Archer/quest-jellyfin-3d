@@ -604,7 +604,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f28fe2fa7094a683f7a063ad8379ce9688a6b7dd0c71eee921ac05882cc97c85"
 dependencies = [
- "parking_lot",
+ "parking_lot 0.12.5",
  "reqwest",
  "serde",
  "serde_json",
@@ -712,6 +712,15 @@ name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
+name = "lock_api"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
 dependencies = [
  "scopeguard",
 ]
@@ -840,8 +849,18 @@ version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
+dependencies = [
+ "lock_api 0.5.0",
+ "parking_lot_core 0.10.0",
 ]
 
 [[package]]
@@ -852,7 +871,19 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.18",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
+dependencies = [
+ "libc",
+ "redox_syscall 0.9.5",
  "smallvec",
  "windows-link",
 ]
@@ -1048,6 +1079,15 @@ name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags",
 ]
@@ -1413,7 +1453,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -1912,28 +1952,40 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xr-core"
-version = "0.1.1"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf07896f7e63ebbd5dd124b8dcec5a27d5b0a5330c6ce19b1c3f405bd38110d2"
+checksum = "0631a397ea40e31411a60f036571f7e1440c737c85a04e0cdf0fc2eaa4e47094"
 dependencies = [
  "ash",
  "libc",
  "ndk",
  "ndk-context",
  "openxr",
- "parking_lot",
+ "parking_lot 0.13.0",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "xr-spatial",
  "xr-video",
 ]
 
 [[package]]
-name = "xr-video"
-version = "0.1.1"
+name = "xr-spatial"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f39ab935ec65ff01371fdfb782d240d990c87301646d5ee0274c7804bc40541"
+checksum = "f7686958d2924285a9141b00df5d8a07a71b19d733850cfd7193f1355961a57b"
+dependencies = [
+ "openxr",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "xr-video"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59086bb257be2152282b4e8f198293841c492a83f364da2fb65b542f88c136a0"
 dependencies = [
  "ash",
  "audiopus",
@@ -1943,7 +1995,7 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "openxr",
- "parking_lot",
+ "parking_lot 0.13.0",
  "serde",
  "thiserror 2.0.21",
  "tracing",

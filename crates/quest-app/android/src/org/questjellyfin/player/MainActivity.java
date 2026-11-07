@@ -411,6 +411,7 @@ public class MainActivity extends Activity {
         page("Opening video", true); backAction = () -> details(item); retryAction = () -> prepare(item, resume);
         loading("Requesting playback from Jellyfin…"); addButton(body, "Cancel", () -> details(item));
         JSONObject preparation = with(value("item", item), "allow_transcoding", prefs.getBoolean("allow_transcoding", true));
+        with(preparation,"projection",prefs.getString("projection."+item,"Auto"));
         String quality = prefs.getString("quality", "original");
         if (!quality.equals("original")) { try { with(preparation, "max_bitrate", Long.parseLong(quality)); } catch (NumberFormatException ignored) {} }
         request("prepare", preparation, data -> {
@@ -422,17 +423,26 @@ public class MainActivity extends Activity {
         page(data.optString("title", "Playback"), true); backAction = () -> details(item); LinearLayout content = scrollBody();
         String format = data.optString("format", "Mono"), projection = data.optString("projection", "Flat");
         ready(data.optString("method") + "  ·  " + format + "  ·  " + data.optInt("width") + " × " + data.optInt("height"));
-        boolean supported = projection.equals("Flat") && !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width") > 0 && data.optInt("height") > 0;
+        boolean supported = !projection.equals("Fisheye") && !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width") > 0 && data.optInt("height") > 0;
+        content.addView(heading("Viewing mode"));
+        RadioGroup views = new RadioGroup(this); views.setOrientation(LinearLayout.HORIZONTAL);
+        String[] viewNames={"Cinema screen","VR180°","VR360°"}, viewValues={"Flat","Equirectangular180","Equirectangular360"};
+        for(int i=0;i<viewNames.length;i++) {
+            final String mode=viewValues[i]; RadioButton option=new RadioButton(this); option.setText(viewNames[i]); option.setTextColor(Color.WHITE); option.setTextSize(18); option.setMinHeight(dp(48)); option.setChecked(projection.equals(mode));
+            option.setOnClickListener(v -> { with(data,"projection",mode); prefs.edit().putString("projection."+item,mode).apply(); }); views.addView(option);
+        }
+        content.addView(views);
+        content.addView(label("Choose the projection that matches the source. In VR, View opens tilt, 180°/360° and recenter controls.",17));
         content.addView(heading("Where would you like to watch?"));
         if (supported) addButton(content, "Watch in immersive cinema", () -> launchCinema(item, data));
         addButton(content, "Watch in Quest panel", () -> { try { playback(item, data); } catch (Exception e) { error("Could not start playback."); } });
         content.addView(label("Cinema: trigger pauses / resumes · thumbstick left / right seeks 10 seconds · grip changes audio · thumbstick up recenters the screen.", 18));
         if (!data.optString("method").equals("DirectPlay")) content.addView(label("Jellyfin selected server conversion. Resolution, bitrate or HDR may change.", 17));
-        if (!supported) content.addView(label("This source's projection or stereo packing is not yet supported in immersive cinema.", 18));
+        if (!supported) content.addView(label(format.equals("Mvc") ? "MVC needs a prepared full-SBS version on the server. Both eye views must be decoded; ordinary server transcoding only preserves the base view." : "This source's projection or stereo packing is not yet supported in immersive cinema.", 18));
         addButton(content, "Playback settings", this::settings); addButton(content, "Back to title", () -> details(item));
         String preferred = prefs.getString("player", "ask");
         if (preferred.equals("cinema") && supported) launchCinema(item, data);
-        else if (preferred.equals("panel")) { try { playback(item, data); } catch (Exception e) { error("Could not start playback."); } }
+        else if (preferred.equals("panel") && format.equals("Mono") && projection.equals("Flat")) { try { playback(item, data); } catch (Exception e) { error("Could not start playback."); } }
     }
     private void launchCinema(String item, JSONObject data) {
         Intent intent = new Intent(this, VrActivity.class); intent.addCategory("com.oculus.intent.category.VR"); intent.addCategory("org.khronos.openxr.intent.category.IMMERSIVE_HMD");

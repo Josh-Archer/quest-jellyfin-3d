@@ -181,12 +181,13 @@ public class DeviceSmoke extends Instrumentation {
             runOnMainSync(() -> { View view = find(activity.getWindow().getDecorView(), "Sample Series"); while (!view.isClickable()) view = (View)view.getParent(); view.performClick(); });
             await("S1 E1\nEpisode One"); screenshot("episodes");
             // Each background uses the same real surface decoder, transport atlas and stereo renderer.
-            for (String environment : new String[]{"cinema", "passthrough", "loft"}) {
-                context.getSharedPreferences("app", 0).edit().putString("environment", environment)
+            for (String environment : new String[]{"cinema", "passthrough", "loft", "vr180", "vr360"}) {
+                final boolean spherical = environment.startsWith("vr");
+                context.getSharedPreferences("app", 0).edit().putString("environment", spherical ? "cinema" : environment)
                     .putFloat("screen_curve", environment.equals("passthrough") ? 0f : 1.2f).commit();
                 ActivityMonitor vrMonitor = addMonitor("org.questjellyfin.player.VrActivity", null, false);
                 JSONObject videoData = new JSONObject().put("title", "XR smoke video").put("url", url + "/Videos/movie/stream")
-                    .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("format", environment.equals("loft") ? "HalfSideBySide" : "Mono").put("eye_order", "LeftRight")
+                    .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("projection", environment.equals("vr180") ? "Equirectangular180" : environment.equals("vr360") ? "Equirectangular360" : "Flat").put("format", (spherical || environment.equals("loft")) ? "HalfSideBySide" : "Mono").put("eye_order", "LeftRight")
                     .put("width", 640).put("height", 360).put("method", "DirectPlay").put("source", "source").put("session", JSONObject.NULL);
                 runOnMainSync(() -> {
                     try {
@@ -208,6 +209,7 @@ public class DeviceSmoke extends Instrumentation {
                 }
                 check((Boolean)submitted.invoke(vr), "No submitted video layer: " + environment);
                 check((Boolean)controls.invoke(vr), "No submitted controls layer: " + environment);
+                check((Boolean)vr.getClass().getMethod("hasSubmittedSphericalLayer").invoke(vr) == spherical, "Incorrect compositor layer type: " + environment);
                 check(playing(vr), "Video did not start: " + environment + " " + startupState(vr, false));
                 command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
                 command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
@@ -229,7 +231,7 @@ public class DeviceSmoke extends Instrumentation {
                 saveControls(vr, "controls-" + environment);
                 command.invoke(vr, 4); await("Playback closed."); removeMonitor(vrMonitor);
             }
-            result.putString("stream", "OK: service logo/artwork, playback chrome idle-hide/reveal/pause and stable surface, persisted server-side 3D filter, credential failure/retry and remembered user switching, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
+            result.putString("stream", "OK: service logo/artwork, playback chrome idle-hide/reveal/pause and stable surface, persisted server-side 3D filter, credential failure/retry and remembered user switching, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, per-eye VR180/VR360 equirect layers, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
         } catch (Throwable error) { result.putString("stream", "FAILED: " + error + "\n"); finish(0, result); }
     }
 }

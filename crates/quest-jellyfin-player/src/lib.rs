@@ -14,7 +14,8 @@ pub mod stereo;
 pub mod virtual_screen;
 
 pub use error::{PlayerError, Result};
-pub use format::{detect_item_format, DetectedStereoFormat, EyeOrder, StereoFormat};
+pub use format::{detect_item_format, DetectedStereoFormat, EyeOrder, Projection, StereoFormat};
+pub mod projection;
 pub use playback_engine::{PlaybackEngine, PlaybackState};
 pub use stereo::{
     aspect_correction_scale, calculate_display_aspect_ratio, calculate_eye_pixel_rect,

@@ -251,3 +251,60 @@ async fn selected_multiview_source_is_not_treated_as_mono_hevc() {
     assert_eq!(result["format"], "MvHevc");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn mvc_uses_packed_alternate_even_when_original_is_direct_playable() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-spatial-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "server".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET")).and(path("/Users/user/Items/movie"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"movie","Name":"Stereo movie","Video3DFormat":"MVC","Path":"/movies/Movie.3D.MVC.m2ts","Tags":["Equirectangular"]}))).mount(&server).await;
+    let base = json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"});
+    let source = json!({"Id":"packed","Path":"/movies/Movie - 3D.FSBS.mkv","SupportsTranscoding":true,"TranscodingUrl":"/Videos/movie/master.m3u8","MediaStreams":[{"Type":"Video","Codec":"hevc","Width":3840,"Height":1080}]});
+    let guard = Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"original","Path":"/movies/Movie.3D.MVC.m2ts","SupportsDirectPlay":true}, source]}))).mount_as_scoped(&server).await;
+    let prepared = run(base.clone()).await.unwrap();
+    // Merged versions may make the packed version primary; the original still must not win.
+    Mock::given(method("GET")).and(path("/Users/user/Items/movie2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"movie2","Name":"Stereo movie","Video3DFormat":"FullSideBySide","Path":"/movies/Movie - 3D.FSBS.mkv"}))).mount(&server).await;
+    Mock::given(method("POST")).and(path("/Items/movie2/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"original","Path":"/movies/Movie.3D.MVC.m2ts","SupportsDirectPlay":true}, source]}))).mount(&server).await;
+    let mut primary = base.clone();
+    primary["item"] = json!("movie2");
+    assert_eq!(run(primary).await.unwrap()["source"], "packed");
+    assert_eq!(prepared["source"], "packed");
+    assert_eq!(prepared["method"], "Transcode");
+    assert_eq!(prepared["format"], "FullSideBySide");
+    assert_eq!(prepared["projection"], "Equirectangular360");
+    let mut flat = base.clone();
+    flat["projection"] = json!("Flat");
+    assert_eq!(run(flat).await.unwrap()["projection"], "Flat");
+    let mut forbid = base.clone();
+    forbid["allow_transcoding"] = json!(false);
+    assert!(run(forbid)
+        .await
+        .unwrap_err()
+        .contains("requires server transcoding"));
+    drop(guard);
+    Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"original","Path":"/movies/Movie.3D.MVC.m2ts","SupportsDirectPlay":true,"MediaStreams":[{"Type":"Video","Codec":"h264","Width":1920,"Height":1080}]}]}))).mount(&server).await;
+    assert_eq!(run(base).await.unwrap()["format"], "Mvc");
+    std::fs::remove_dir_all(dir).unwrap();
+}

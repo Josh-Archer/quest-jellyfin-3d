@@ -7,7 +7,7 @@ use jni::{
 use quest_jellyfin_player::{
     build_stereo_cylinder_layers_at_pose, build_stereo_quad_layers_at_pose,
     screen_controls::{artwork_height, panel_transform, Button, ScreenControls},
-    EyeOrder, StereoFormat, VirtualScreenConfig,
+    EyeOrder, Projection, StereoFormat, VirtualScreenConfig,
 };
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
@@ -120,6 +120,7 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
     height: i32,
     format: JString<'_>,
     order: JString<'_>,
+    projection: JString<'_>,
     passthrough: jboolean,
     screen_width: jfloat,
     screen_distance: jfloat,
@@ -146,6 +147,11 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                 .map_err(|_| "Invalid eye order")?
                 .into();
             let (format, order) = crate::surface_size::parse_immersive_stereo(&format, &order)?;
+            let projection: String = env
+                .get_string(&projection)
+                .map_err(|_| "Invalid projection")?
+                .into();
+            let projection = crate::surface_size::parse_projection(&projection)?;
             let (width, height) = (
                 u32::try_from(width).map_err(|_| "Invalid video width")?,
                 u32::try_from(height).map_err(|_| "Invalid video height")?,
@@ -171,6 +177,7 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                     height,
                     format,
                     order,
+                    projection,
                     passthrough: passthrough != 0,
                     screen_width: if screen_width.is_finite() {
                         screen_width.clamp(1.5, 6.0)
@@ -208,6 +215,7 @@ struct XrPlayback {
     height: u32,
     format: StereoFormat,
     order: EyeOrder,
+    projection: Projection,
     passthrough: bool,
     screen_width: f32,
     screen_distance: f32,
@@ -224,11 +232,15 @@ fn run_xr(
         height,
         format,
         order,
+        mut projection,
         passthrough,
         screen_width,
         screen_distance,
         epoch,
     } = playback;
+    let spherical = projection != Projection::Flat;
+    let passthrough = passthrough && !spherical;
+    let mut view_tilt = 0.0_f32;
     let mut screen = VirtualScreenConfig {
         environment: quest_jellyfin_player::VirtualScreenEnvironment::from_passthrough(passthrough),
         screen_width_m: screen_width,
@@ -245,13 +257,17 @@ fn run_xr(
         unsafe { OpenXrContext::try_new_android(&config, &mut vulkan, activity.as_raw().cast()) }
             .map_err(|e| e.to_string())?;
     diagnostic("XR context created");
+    if spherical && !xr.supports_equirect2() {
+        return Err("This headset runtime does not support spherical video layers".into());
+    }
     if passthrough && !xr.is_passthrough_enabled() {
         return Err("Passthrough is unavailable on this headset".into());
     }
     let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
     let mut controls = ScreenControls::default();
     let mut gestures = HandGestureDetector::default();
-    let loft = !passthrough
+    let loft = !spherical
+        && !passthrough
         && env
             .call_method(activity, "isLoft", "()Z", &[])
             .map_err(|_| "Cannot read cinema environment")?
@@ -273,10 +289,11 @@ fn run_xr(
         .map_err(|_| "Cannot read screen curvature")?
         .f()
         .map_err(|_| "Invalid curvature")?;
-    if xr.supports_cylinder() && curve.is_finite() {
+    if !spherical && xr.supports_cylinder() && curve.is_finite() {
         quest_jellyfin_player::screen_controls::bend(&mut transform, curve.clamp(0.0, 2.4));
     }
     let mut anchored = false;
+    let mut panorama_orientation = Quat::IDENTITY;
     let mut atlas_ready = false;
     let mut atlas_visual = (-1, false, -1);
     let mut atlas_refresh = std::time::Instant::now() - Duration::from_secs(1);
@@ -388,6 +405,7 @@ fn run_xr(
                         quest_jellyfin_player::cinema::pose_in_front(head, screen.distance_m);
                     transform.position = pose.position;
                     transform.orientation = pose.orientation;
+                    panorama_orientation = pose.orientation;
                     anchored = true;
                 }
             }
@@ -413,6 +431,17 @@ fn run_xr(
             }
             let dt = frame_clock.elapsed().as_secs_f32().min(0.05);
             frame_clock = std::time::Instant::now();
+            if spherical && !controls.visible && inputs.iter().any(|i| i.is_selecting) {
+                if let Some(head) = head {
+                    let pose =
+                        quest_jellyfin_player::cinema::pose_in_front(head, screen.distance_m);
+                    transform.position = pose.position;
+                    transform.orientation = pose.orientation;
+                }
+                controls.suspend();
+            }
+            let previous_projection = projection;
+            let previous_tilt = view_tilt;
             let before = transform.clone();
             let was_grabbing = controls.grab.is_grabbing();
             let command = head
@@ -439,24 +468,41 @@ fn run_xr(
                     Button::Audio => Some(3),
                     Button::Exit => Some(4),
                     Button::Smaller => {
-                        quest_jellyfin_player::screen_controls::resize(&mut transform, 0.9);
+                        if spherical {
+                            view_tilt =
+                                (view_tilt - 5_f32.to_radians()).max(-std::f32::consts::FRAC_PI_2);
+                        } else {
+                            quest_jellyfin_player::screen_controls::resize(&mut transform, 0.9);
+                        }
                         None
                     }
                     Button::Larger => {
-                        quest_jellyfin_player::screen_controls::resize(&mut transform, 1.1);
+                        if spherical {
+                            view_tilt =
+                                (view_tilt + 5_f32.to_radians()).min(std::f32::consts::FRAC_PI_2);
+                        } else {
+                            quest_jellyfin_player::screen_controls::resize(&mut transform, 1.1);
+                        }
                         None
                     }
                     Button::Flatter => {
-                        quest_jellyfin_player::screen_controls::bend(&mut transform, -0.3);
+                        if spherical {
+                            projection = Projection::Equirectangular180;
+                        } else {
+                            quest_jellyfin_player::screen_controls::bend(&mut transform, -0.3);
+                        }
                         None
                     }
                     Button::Curvier => {
-                        if xr.supports_cylinder() {
+                        if spherical {
+                            projection = Projection::Equirectangular360;
+                        } else if xr.supports_cylinder() {
                             quest_jellyfin_player::screen_controls::bend(&mut transform, 0.3);
                         }
                         None
                     }
                     Button::Recenter => {
+                        view_tilt = 0.0;
                         controls.grab.release();
                         if let Some(head) = head {
                             let pose = quest_jellyfin_player::cinema::pose_in_front(
@@ -465,6 +511,7 @@ fn run_xr(
                             );
                             transform.position = pose.position;
                             transform.orientation = pose.orientation;
+                            panorama_orientation = pose.orientation;
                             anchored = true;
                         } else {
                             anchored = false;
@@ -478,7 +525,24 @@ fn run_xr(
                         .map_err(|_| "Cannot send playback control")?;
                 }
             }
-            if (transform != before || was_grabbing) && !controls.grab.is_grabbing() {
+            if spherical && (projection != previous_projection || view_tilt != previous_tilt) {
+                env.call_method(
+                    activity,
+                    "onXrProjectionChanged",
+                    "(JIF)V",
+                    &[
+                        JValue::Long(epoch as jlong),
+                        JValue::Int(if projection == Projection::Equirectangular180 {
+                            180
+                        } else {
+                            360
+                        }),
+                        JValue::Float(view_tilt.to_degrees()),
+                    ],
+                )
+                .map_err(|_| "Cannot update VR view settings")?;
+            }
+            if !spherical && (transform != before || was_grabbing) && !controls.grab.is_grabbing() {
                 let distance = head
                     .map(|h| (transform.position - h.position).length())
                     .unwrap_or(screen.distance_m);
@@ -575,23 +639,26 @@ fn run_xr(
             let hud = xr.hud_swapchain().ok_or("No cinema control swapchain")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
             screen.screen_width_m = transform.size_m().0;
-            let quad_layers =
-                if had_video_frame && transform.display_mode == xr_core::DisplayMode::FlatQuad {
-                    build_stereo_quad_layers_at_pose(
-                        space,
-                        swapchain,
-                        format,
-                        order,
-                        size.width,
-                        size.height,
-                        &screen,
-                        transform.pose().into(),
-                    )
-                    .map_err(|e| e.to_string())?
-                } else {
-                    Vec::new()
-                };
+            let quad_layers = if had_video_frame
+                && !spherical
+                && transform.display_mode == xr_core::DisplayMode::FlatQuad
+            {
+                build_stereo_quad_layers_at_pose(
+                    space,
+                    swapchain,
+                    format,
+                    order,
+                    size.width,
+                    size.height,
+                    &screen,
+                    transform.pose().into(),
+                )
+                .map_err(|e| e.to_string())?
+            } else {
+                Vec::new()
+            };
             let cylinder_layers = if had_video_frame
+                && !spherical
                 && transform.display_mode == xr_core::DisplayMode::CurvedCylinder
             {
                 build_stereo_cylinder_layers_at_pose(
@@ -605,6 +672,24 @@ fn run_xr(
                     transform.curve_radius,
                     transform.curve_angle,
                     transform.aspect_ratio,
+                )
+                .map_err(|e| e.to_string())?
+            } else {
+                Vec::new()
+            };
+            let equirect_layers = if had_video_frame && spherical {
+                let orientation =
+                    panorama_orientation * Quat::from_axis_angle(Vec3::UNIT_X, view_tilt);
+                let pose: openxr::Posef = ScreenPose::new(Vec3::ZERO, orientation).into();
+                quest_jellyfin_player::projection::build_equirect_layers(
+                    space,
+                    swapchain,
+                    format,
+                    order,
+                    size.width,
+                    size.height,
+                    projection,
+                    pose,
                 )
                 .map_err(|e| e.to_string())?
             } else {
@@ -730,6 +815,7 @@ fn run_xr(
             refs.extend(room_layers.iter().map(|layer| &**layer));
             refs.extend(quad_layers.iter().map(|layer| &**layer));
             refs.extend(cylinder_layers.iter().map(|layer| &**layer));
+            refs.extend(equirect_layers.iter().map(|layer| &**layer));
             refs.extend(control_cylinders.iter().map(|layer| &**layer));
             refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
@@ -747,6 +833,15 @@ fn run_xr(
                 reported_controls = true;
             }
             if had_video_frame && !reported_video_layer {
+                if !equirect_layers.is_empty() {
+                    env.call_method(
+                        activity,
+                        "onXrSphericalLayerSubmitted",
+                        "(J)V",
+                        &[JValue::Long(epoch as jlong)],
+                    )
+                    .map_err(|_| "Cannot confirm spherical presentation")?;
+                }
                 env.call_method(
                     activity,
                     "onXrVideoLayerSubmitted",
@@ -754,7 +849,11 @@ fn run_xr(
                     &[JValue::Long(epoch as jlong)],
                 )
                 .map_err(|_| "Cannot confirm cinema presentation")?;
-                diagnostic("XR first video layer submitted");
+                diagnostic(if spherical {
+                    "XR first spherical video layers submitted"
+                } else {
+                    "XR first video layer submitted"
+                });
                 reported_video_layer = true;
             }
         }
