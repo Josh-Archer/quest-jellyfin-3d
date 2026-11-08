@@ -153,10 +153,15 @@ public class DeviceSmoke extends Instrumentation {
             click("♡ Add favorite"); await("♥ Remove favorite");
             click("Play from beginning"); await("Requesting playback from Jellyfin…"); screenshot("opening-video"); await("Where would you like to watch?"); screenshot("playback-choice");
             click("Watch in Quest panel"); await("Playing"); screenshot("panel-playing");
+            runOnMainSync(() -> {
+                long now=SystemClock.uptimeMillis();
+                android.view.MotionEvent exit=android.view.MotionEvent.obtain(now,now,android.view.MotionEvent.ACTION_HOVER_EXIT,0,0,0);
+                activity.dispatchGenericMotionEvent(exit);exit.recycle();
+            });
             int[] before=videoBounds();
             long hideDeadline=SystemClock.uptimeMillis()+9000;
             while(chromeVisible() && SystemClock.uptimeMillis()<hideDeadline) SystemClock.sleep(100);
-            check(!chromeVisible(),"Playback top bar did not auto-hide"); screenshot("panel-clean-video");
+            check(!chromeVisible(),"Playback top bar did not auto-hide: playing="+((android.widget.VideoView)field(activity,"video")).isPlaying()+" focus="+activity.hasWindowFocus()+" hover="+field(activity,"hoveringChrome")+" touch="+field(activity,"touchingPlayer")); screenshot("panel-clean-video");
             check(java.util.Arrays.equals(before,videoBounds()),"Hiding chrome resized the video surface");
             runOnMainSync(() -> {
                 long now=SystemClock.uptimeMillis(); View root=activity.getWindow().getDecorView();
