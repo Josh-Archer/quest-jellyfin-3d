@@ -20,15 +20,17 @@ pub fn build_equirect_layers<'a>(
     height: u32,
     projection: Projection,
     pose: Posef,
+    comfort_mono: bool,
 ) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
     let angle = horizontal_angle(projection).ok_or_else(|| {
         crate::PlayerError::Playback("Expected equirectangular projection".into())
     })?;
-    let specs = build_stereo_eye_layer_specs(format, order, width, height)?;
+    let specs = equirect_eye_specs(format, order, width, height, comfort_mono)?;
     Ok(specs
         .into_iter()
         .map(|spec| {
             CompositionLayerEquirect2KHR::new()
+                .layer_flags(openxr::CompositionLayerFlags::CORRECT_CHROMATIC_ABERRATION)
                 .space(space)
                 .eye_visibility(spec.eye_visibility)
                 .sub_image(
@@ -52,6 +54,23 @@ pub fn build_equirect_layers<'a>(
                 .lower_vertical_angle(-std::f32::consts::FRAC_PI_2)
         })
         .collect())
+}
+
+/// A 2D comfort view keeps a complete source eye and makes that same crop binocular.
+/// It must not display the full packed frame or two overlapping BOTH-eye layers.
+pub fn equirect_eye_specs(
+    format: StereoFormat,
+    order: EyeOrder,
+    width: u32,
+    height: u32,
+    mono: bool,
+) -> Result<Vec<crate::EyeLayerSpec>> {
+    let mut specs = build_stereo_eye_layer_specs(format, order, width, height)?;
+    if mono {
+        specs.truncate(1);
+        specs[0].eye_visibility = openxr::EyeVisibility::BOTH;
+    }
+    Ok(specs)
 }
 
 /// Manual choices override detection; unspecified spherical coverage is inferred only when
@@ -126,6 +145,28 @@ mod tests {
             resolve_projection("Equirectangular360", Projection::Flat, &tags, 1.0),
             Projection::Equirectangular360
         );
+    }
+    #[test]
+    fn comfort_view_uses_one_complete_eye_for_both_eyes_in_either_order() {
+        for order in [EyeOrder::LeftRight, EyeOrder::RightLeft] {
+            let stereo =
+                equirect_eye_specs(StereoFormat::FullSideBySide, order, 7680, 3840, false).unwrap();
+            let mono =
+                equirect_eye_specs(StereoFormat::FullSideBySide, order, 7680, 3840, true).unwrap();
+            assert_eq!(stereo.len(), 2);
+            assert_eq!(mono.len(), 1);
+            assert_eq!(mono[0].eye_visibility, openxr::EyeVisibility::BOTH);
+            assert_eq!(mono[0].sub_image_rect, stereo[0].sub_image_rect);
+            assert_eq!(mono[0].sub_image_rect.width, 3840);
+            assert_eq!(
+                mono[0].sub_image_rect.x,
+                if order == EyeOrder::LeftRight {
+                    0
+                } else {
+                    3840
+                }
+            );
+        }
     }
     #[test]
     fn full_resolution_stereo_regions_remain_separate_for_vr() {

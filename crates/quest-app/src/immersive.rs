@@ -780,19 +780,11 @@ fn run_xr(
                     size.height,
                     projection,
                     pose,
+                    comfort_mono,
                 )
                 .map_err(|e| e.to_string())?
             } else {
                 Vec::new()
-            };
-            let equirect_layers = if comfort_mono {
-                equirect_layers
-                    .into_iter()
-                    .take(1)
-                    .map(|layer| layer.eye_visibility(openxr::EyeVisibility::BOTH))
-                    .collect::<Vec<_>>()
-            } else {
-                equirect_layers
             };
             let mut overlays = Vec::new();
             let room = loft_anchor
