@@ -22,6 +22,24 @@ public class DeviceSmoke extends Instrumentation {
     private Activity activity;
     @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); this.arguments = arguments; start(); }
     private void check(boolean condition, String message) { if (!condition) throw new AssertionError(message); }
+    private int decodedFrames() throws Exception {
+        // NuPlayer does not populate MediaPlayer's live frame metric on this Quest.
+        // Read only its numeric counter; never emit the dump (it can contain URLs).
+        try (java.io.InputStream in = new android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                getUiAutomation().executeShellCommand("dumpsys media.player"))) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[8192]; int count;
+            while ((count=in.read(buffer))!=-1) bytes.write(buffer,0,count);
+            String dump=bytes.toString("UTF-8");
+            int client=dump.indexOf("packageName: org.questjellyfin.player.smoke");
+            check(client>=0,"No isolated media player in decoder diagnostics");
+            int next=dump.indexOf("\n Client",client);
+            java.util.regex.Matcher matcher=java.util.regex.Pattern.compile("numFramesTotal\\((\\d+)\\)")
+                .matcher(dump.substring(client,next<0 ? dump.length() : next));
+            check(matcher.find(),"No live video frame counter");
+            return Integer.parseInt(matcher.group(1));
+        }
+    }
     private TextView find(View view, String text) {
         if (view.getVisibility() != View.VISIBLE || !view.isShown()) return null;
         if (view instanceof TextView && ((TextView)view).getText().toString().equals(text)) return (TextView)view;
@@ -228,11 +246,13 @@ public class DeviceSmoke extends Instrumentation {
                 }catch(Exception e){throw new RuntimeException(e);} });
                 final int[] beforeBuffer = {0,0};
                 runOnMainSync(() -> { android.media.MediaPlayer mp=(android.media.MediaPlayer)field(vr,"player");
-                    beforeBuffer[0]=mp.getCurrentPosition(); beforeBuffer[1]=mp.getMetrics().getInt(android.media.MediaPlayer.MetricsConstants.FRAMES,-1); });
+                    beforeBuffer[0]=mp.getCurrentPosition();  });
+                beforeBuffer[1]=decodedFrames();
                 SystemClock.sleep(6000);check((Integer)count.invoke(vr)==0,"Stale stereo video remained visible during buffering");
                 final int[] afterBuffer = {0,0};
                 runOnMainSync(() -> { android.media.MediaPlayer mp=(android.media.MediaPlayer)field(vr,"player");
-                    afterBuffer[0]=mp.getCurrentPosition(); afterBuffer[1]=mp.getMetrics().getInt(android.media.MediaPlayer.MetricsConstants.FRAMES,-1); });
+                    afterBuffer[0]=mp.getCurrentPosition();  });
+                afterBuffer[1]=decodedFrames();
                 check(afterBuffer[0] - beforeBuffer[0] > 4500,"Buffer cover blocked media progress");
                 check(beforeBuffer[1]>=0 && afterBuffer[1]-beforeBuffer[1]>100,"Buffer cover stopped video frame consumption: "+beforeBuffer[1]+" -> "+afterBuffer[1]);
                 check((Boolean)controls.invoke(vr),"Buffering lost controls");
