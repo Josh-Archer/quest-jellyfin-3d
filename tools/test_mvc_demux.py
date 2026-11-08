@@ -40,6 +40,20 @@ class DemuxTest(unittest.TestCase):
         self.assertEqual(demux(io.BytesIO(data), out, 0x1011, 0x1012), 1)
         self.assertEqual(out.getvalue(), b'L' * 98 + b'R' * 98)
 
+    def test_end_markers_follow_both_views_including_final_pair(self):
+        base = b'\0\0\0\1\x65base'
+        dependent = b'\0\0\1\x74dependent'
+        sequence_end = b'\0\0\0\1\x0a'
+        stream_end = b'\0\0\1\x0b'
+        for m2ts in (False, True):
+            data = b''.join(packet(pid, i, i * 3750, payload, m2ts)
+                            for i in range(2)
+                            for pid, payload in [(0x1011, base + sequence_end),
+                                                 (0x1012, dependent + stream_end)])
+            out = io.BytesIO()
+            self.assertEqual(demux(io.BytesIO(data), out, 0x1011, 0x1012), 2)
+            self.assertEqual(out.getvalue(), (base + dependent + sequence_end + stream_end) * 2)
+
     def test_sample_is_bounded_at_pair_boundary(self):
         out = io.BytesIO()
         self.assertEqual(demux(io.BytesIO(fixture()), out, 0x1011, 0x1012, .04), 1)

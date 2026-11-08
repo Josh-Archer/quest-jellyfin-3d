@@ -5,6 +5,7 @@ The two PIDs are explicit, never guessed from AVC codec labels. Matched DTS and 
 transport continuity and the presence of both views are required. Output is binary stdout.
 """
 import argparse
+import re
 import sys
 
 
@@ -26,6 +27,27 @@ def pes_payload(data):
         raise ValueError("Truncated video PES")
     return pts, dts, bytes(data[start:end])
 
+
+
+def write_views(output, base, dependent):
+    # Blu-ray can terminate both PES views with end-of-sequence NALs. A base
+    # marker must not drain the decoder before the dependent view is supplied.
+    endings = []
+    for payload in (base, dependent):
+        starts = list(re.finditer(rb"\x00\x00(?:\x00)?\x01", payload))
+        if not starts:
+            output.write(payload)
+            continue
+        output.write(payload[:starts[0].start()])
+        for i, start in enumerate(starts):
+            end = starts[i + 1].start() if i + 1 < len(starts) else len(payload)
+            nal = payload[start.start():end]
+            if start.end() < end and payload[start.end()] & 31 in (10, 11):
+                endings.append(nal)
+            else:
+                output.write(nal)
+    for nal in endings:
+        output.write(nal)
 
 def demux(source, output, base_pid, dependent_pid, seconds=None):
     if base_pid == dependent_pid:
@@ -90,7 +112,7 @@ def demux(source, output, base_pid, dependent_pid, seconds=None):
                     first_dts = dts
                 if seconds is not None and dts - first_dts >= seconds * 90000:
                     return pairs
-                output.write(views[base_pid][1]); output.write(views[dependent_pid][1])
+                write_views(output, views[base_pid][1], views[dependent_pid][1])
                 last_dts = dts
                 pairs += 1
             if len(ready) > 64:
@@ -108,7 +130,7 @@ def demux(source, output, base_pid, dependent_pid, seconds=None):
             raise ValueError("Unpaired MVC eye at end of stream")
         if last_dts is not None and dts <= last_dts:
             raise ValueError("MVC decode timestamps are not ordered")
-        output.write(views[base_pid][1]); output.write(views[dependent_pid][1])
+        write_views(output, views[base_pid][1], views[dependent_pid][1])
         last_dts = dts
         pairs += 1
     if not pairs:
