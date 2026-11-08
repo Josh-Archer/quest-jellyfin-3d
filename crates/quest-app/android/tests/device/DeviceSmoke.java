@@ -148,6 +148,8 @@ public class DeviceSmoke extends Instrumentation {
             try (FileOutputStream out = context.openFileOutput("jellyfin-session.json", 0)) { out.write(session.getBytes("UTF-8")); }
             Intent launch = new Intent().setClassName(context.getPackageName(), "org.questjellyfin.player.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = startActivitySync(launch); await("Recently Added");
+            boolean xrOnly=Boolean.parseBoolean(arguments.getString("xr_only","false"));
+            if (!xrOnly) {
             long end = SystemClock.uptimeMillis() + 15000; final int[] art = {0};
             do { runOnMainSync(() -> art[0] = posters(activity.getWindow().getDecorView())); if (art[0] > 0) break; SystemClock.sleep(100); } while (SystemClock.uptimeMillis() < end);
             check(art[0] > 0, "Poster bytes never reached ImageViews"); screenshot("home");
@@ -205,14 +207,16 @@ public class DeviceSmoke extends Instrumentation {
             click("Shows"); await("Sample Series");
             runOnMainSync(() -> { View view = find(activity.getWindow().getDecorView(), "Sample Series"); while (!view.isClickable()) view = (View)view.getParent(); view.performClick(); });
             await("S1 E1\nEpisode One"); screenshot("episodes");
+            }
             // Each background uses the same real surface decoder, transport atlas and stereo renderer.
-            for (String environment : new String[]{"cinema", "passthrough", "loft", "vr180", "vr360"}) {
+            for (String environment : new String[]{"cinema", "passthrough", "loft", "vr180", "vr360", "vr180-mono"}) {
                 final boolean spherical = environment.startsWith("vr");
-                context.getSharedPreferences("app", 0).edit().putString("environment", spherical ? "cinema" : environment)
+                final boolean mono = environment.endsWith("-mono");
+                context.getSharedPreferences("app", 0).edit().putFloat("stereo_alignment.movie",spherical ? 2.5f : 0f).putBoolean("comfort_mono.movie",mono).putString("environment", spherical ? "cinema" : environment)
                     .putFloat("screen_curve", environment.equals("passthrough") ? 0f : 1.2f).commit();
                 ActivityMonitor vrMonitor = addMonitor("org.questjellyfin.player.VrActivity", null, false);
                 JSONObject videoData = new JSONObject().put("title", "XR smoke video").put("url", url + "/Videos/movie/stream")
-                    .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("projection", environment.equals("vr180") ? "Equirectangular180" : environment.equals("vr360") ? "Equirectangular360" : "Flat").put("format", (spherical || environment.equals("loft")) ? "HalfSideBySide" : "Mono").put("eye_order", "LeftRight")
+                    .put("authorization", "MediaBrowser Token=\"smoke-token\"").put("projection", environment.startsWith("vr180") ? "Equirectangular180" : environment.equals("vr360") ? "Equirectangular360" : "Flat").put("format", (spherical || environment.equals("loft")) ? "HalfSideBySide" : "Mono").put("eye_order", "LeftRight")
                     .put("resume", spherical ? 50000000L : 0L).put("width", 640).put("height", 360).put("method", "DirectPlay").put("source", "source").put("session", JSONObject.NULL);
                 runOnMainSync(() -> {
                     try {
@@ -237,8 +241,20 @@ public class DeviceSmoke extends Instrumentation {
                 check((Boolean)vr.getClass().getMethod("hasSubmittedSphericalLayer").invoke(vr) == spherical, "Incorrect compositor layer type: " + environment);
                 check(playing(vr), "Video did not start: " + environment + " " + startupState(vr, false));
                 java.lang.reflect.Method count=vr.getClass().getMethod("currentVideoLayerCount");
-                int expectedLayers=(spherical || environment.equals("loft")) ? 2 : 1;
+                int expectedLayers=mono ? 1 : (spherical || environment.equals("loft")) ? 2 : 1;
                 check((Integer)count.invoke(vr)==expectedLayers,"Incorrect eye layer count");
+                check((Boolean)vr.getClass().getMethod("hasStereoAlignment").invoke(vr)==spherical,"Unexpected alignment controls");
+                if(spherical) {
+                    java.lang.reflect.Method alignment=vr.getClass().getMethod("initialAlignment");
+                    check((Float)alignment.invoke(vr)==2.5f,"Saved stereo alignment did not load");
+                    long activeEpoch=(Long)field(vr,"xrEpoch");
+                    java.lang.reflect.Method changed=vr.getClass().getMethod("onXrAlignmentChanged",long.class,float.class);
+                    changed.invoke(vr,activeEpoch-1,-5f);SystemClock.sleep(100);
+                    check((Float)alignment.invoke(vr)==2.5f,"Stale alignment callback changed this title");
+                    changed.invoke(vr,activeEpoch,99f);SystemClock.sleep(100);
+                    check(context.getSharedPreferences("app",0).getFloat("stereo_alignment.movie",0)==8f,"Alignment bounds/persistence failed");
+                    changed.invoke(vr,activeEpoch,2.5f);SystemClock.sleep(100);
+                }
                 runOnMainSync(() -> { try {
                     Object presentation=field(vr,"presentation");
                     java.lang.reflect.Method buffering=presentation.getClass().getDeclaredMethod("buffering",boolean.class);buffering.setAccessible(true);buffering.invoke(presentation,true);
@@ -262,7 +278,11 @@ public class DeviceSmoke extends Instrumentation {
                     java.lang.reflect.Method publish=vr.getClass().getDeclaredMethod("publishPresentation");publish.setAccessible(true);publish.invoke(vr);
                 }catch(Exception e){throw new RuntimeException(e);} });
                 SystemClock.sleep(500);check((Integer)count.invoke(vr)==expectedLayers,"Video did not return after buffering");
-                command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed");
+                // Reestablish an explicit playing fixture after any headset focus interruption.
+                long transportDeadline=SystemClock.uptimeMillis()+3000;
+                while(!playing(vr) && SystemClock.uptimeMillis()<transportDeadline) { startupState(vr,true);SystemClock.sleep(100); }
+                check(playing(vr),"Transport fixture lost headset focus: "+startupState(vr,false));
+                command.invoke(vr, 0); SystemClock.sleep(200); check(!playing(vr), "Pause failed: "+startupState(vr,false));
                 command.invoke(vr, 0); SystemClock.sleep(200); check(playing(vr), "Play failed");
                 java.lang.reflect.Field epochField = vr.getClass().getDeclaredField("xrEpoch"); epochField.setAccessible(true);
                 long epoch = epochField.getLong(vr);
@@ -282,7 +302,7 @@ public class DeviceSmoke extends Instrumentation {
                 saveControls(vr, "controls-" + environment);
                 command.invoke(vr, 4); await("Playback closed."); removeMonitor(vrMonitor);
             }
-            result.putString("stream", "OK: service logo/artwork, playback chrome idle-hide/reveal/pause and stable surface, persisted server-side 3D filter, credential failure/retry and remembered user switching, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, per-eye VR180/VR360 equirect layers, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
+            result.putString("stream", xrOnly ? "OK: XR-only cinema/passthrough/loft/VR180/VR360, saved stereo alignment, stale callback rejection, mono bypass, buffering frame progress, transport and focus-loss pause\n" : "OK: service logo/artwork, playback chrome idle-hide/reveal/pause and stable surface, persisted server-side 3D filter, credential failure/retry and remembered user switching, home, movies, details, favorites, loading-to-panel-playback, settings persistence, series episodes, request errors and retry, separate VR task, cinema/passthrough/loft control and video layers, stereo cylinder, per-eye VR180/VR360 equirect layers, play/pause/seek/audio/exit, stale callback rejection and focus-loss pause\n"); finish(-1, result);
         } catch (Throwable error) { result.putString("stream", "FAILED: " + error + "\n"); finish(0, result); }
     }
 }

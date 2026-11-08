@@ -10,6 +10,55 @@ pub fn horizontal_angle(projection: Projection) -> Option<f32> {
     }
 }
 
+/// Per-title horizontal correction, in half-degree steps of relative eye angle.
+/// This changes view orientation, never source crops, resolution or headset IPD.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StereoAlignment {
+    steps: i16,
+}
+impl StereoAlignment {
+    pub fn from_degrees(value: f32) -> Self {
+        Self {
+            steps: if value.is_finite() {
+                (value.clamp(-8.0, 8.0) * 2.0).round() as i16
+            } else {
+                0
+            },
+        }
+    }
+    pub fn degrees(self) -> f32 {
+        f32::from(self.steps) * 0.5
+    }
+    pub fn adjust_steps(&mut self, steps: i16) {
+        self.steps = self.steps.saturating_add(steps).clamp(-16, 16);
+    }
+    pub fn eye_pose(self, pose: Posef, eye: openxr::EyeVisibility) -> Posef {
+        // A positive correction adds to right-minus-left displayed longitude.
+        // Positive OpenXR yaw rotates a forward ray toward negative longitude.
+        let sign = if eye == openxr::EyeVisibility::LEFT {
+            1.0
+        } else if eye == openxr::EyeVisibility::RIGHT {
+            -1.0
+        } else {
+            return pose;
+        };
+        if self.steps == 0 {
+            return pose;
+        }
+        let (s, c) = (sign * self.degrees().to_radians() / 4.0).sin_cos();
+        let q = pose.orientation;
+        Posef {
+            orientation: openxr::Quaternionf {
+                x: q.x * c - q.z * s,
+                y: q.y * c + q.w * s,
+                z: q.z * c + q.x * s,
+                w: q.w * c - q.y * s,
+            },
+            ..pose
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_equirect_layers<'a>(
     space: &'a Space,
@@ -21,6 +70,33 @@ pub fn build_equirect_layers<'a>(
     projection: Projection,
     pose: Posef,
     comfort_mono: bool,
+) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
+    build_equirect_layers_aligned(
+        space,
+        swapchain,
+        format,
+        order,
+        width,
+        height,
+        projection,
+        pose,
+        comfort_mono,
+        StereoAlignment::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_equirect_layers_aligned<'a>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<Vulkan>,
+    format: StereoFormat,
+    order: EyeOrder,
+    width: u32,
+    height: u32,
+    projection: Projection,
+    pose: Posef,
+    comfort_mono: bool,
+    alignment: StereoAlignment,
 ) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
     let angle = horizontal_angle(projection).ok_or_else(|| {
         crate::PlayerError::Playback("Expected equirectangular projection".into())
@@ -47,7 +123,7 @@ pub fn build_equirect_layers<'a>(
                             },
                         }),
                 )
-                .pose(pose)
+                .pose(alignment.eye_pose(pose, spec.eye_visibility))
                 .radius(0.0)
                 .central_horizontal_angle(angle)
                 .upper_vertical_angle(std::f32::consts::FRAC_PI_2)
@@ -113,6 +189,46 @@ pub fn resolve_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn alignment_is_bounded_reversible_and_invalid_values_are_neutral() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                StereoAlignment::from_degrees(value),
+                StereoAlignment::default()
+            );
+        }
+        let mut alignment = StereoAlignment::default();
+        alignment.adjust_steps(1);
+        assert_eq!(alignment.degrees(), 0.5);
+        alignment.adjust_steps(-1);
+        assert_eq!(alignment.degrees(), 0.0);
+        alignment.adjust_steps(i16::MAX);
+        assert_eq!(alignment.degrees(), 8.0);
+        alignment.adjust_steps(i16::MIN);
+        assert_eq!(alignment.degrees(), -8.0);
+    }
+    #[test]
+    fn relative_correction_aligns_a_known_eight_degree_source_disparity() {
+        let pose = Posef::IDENTITY;
+        let alignment = StereoAlignment::from_degrees(8.0);
+        let left = alignment.eye_pose(pose, openxr::EyeVisibility::LEFT);
+        let right = alignment.eye_pose(pose, openxr::EyeVisibility::RIGHT);
+        let yaw = |p: Posef| 2.0 * p.orientation.y.atan2(p.orientation.w);
+        let displayed_left = 4_f32.to_radians() - yaw(left);
+        let displayed_right = -4_f32.to_radians() - yaw(right);
+        assert!((displayed_left - displayed_right).abs() < 1e-6);
+        assert_eq!(left.position, pose.position);
+        assert_eq!(right.position, pose.position);
+        assert_eq!(alignment.eye_pose(pose, openxr::EyeVisibility::BOTH), pose);
+        assert_eq!(
+            StereoAlignment::default().eye_pose(pose, openxr::EyeVisibility::LEFT),
+            pose
+        );
+        assert_eq!(
+            StereoAlignment::default().eye_pose(pose, openxr::EyeVisibility::RIGHT),
+            pose
+        );
+    }
     #[test]
     fn spherical_coverage_and_explicit_overrides_do_not_change_packing() {
         assert_eq!(

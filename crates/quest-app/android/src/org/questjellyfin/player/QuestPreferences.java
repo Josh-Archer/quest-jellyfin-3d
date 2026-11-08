@@ -2,6 +2,11 @@ package org.questjellyfin.player;
 
 /** Shared bounds and defaults used by the settings screen and immersive activity. */
 final class QuestPreferences {
+    static float stereoAlignment(float degrees) {
+        if (!Float.isFinite(degrees)) return 0f;
+        float value = Math.copySign(Math.round(Math.min(8f,Math.abs(degrees))*2f)/2f,degrees);
+        return value == 0f ? 0f : value;
+    }
     static final float DEFAULT_WIDTH = 4f;
     static final float DEFAULT_DISTANCE = 2.2f;
     static float screenWidth(float value) { return finiteClamp(value, 1.5f, 6f, DEFAULT_WIDTH); }

@@ -56,6 +56,6 @@ mapfile -d '' CLASSES < <(find "$OUT/classes" -name '*.class' -print0)
 "$BUILD_TOOLS/zipalign" -f 4 "$OUT/test.apk" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$APP_KEYSTORE" --ks-pass pass:android --out "$OUT/signed.apk" "$OUT/aligned.apk"
 adb install -r "$OUT/signed.apk"
-adb shell am instrument -w -e server "http://127.0.0.1:$PORT" org.questjellyfin.tests/org.questjellyfin.tests.DeviceSmoke | tee "$ARTIFACTS/result.txt"
+adb shell am instrument -w -e server "http://127.0.0.1:$PORT" -e xr_only "${QUEST_SMOKE_XR_ONLY:-false}" org.questjellyfin.tests/org.questjellyfin.tests.DeviceSmoke | tee "$ARTIFACTS/result.txt"
 adb pull "/sdcard/Android/data/$PACKAGE/files/." "$ARTIFACTS" >/dev/null
 rg -q '^OK:|stream=OK:' "$ARTIFACTS/result.txt"
