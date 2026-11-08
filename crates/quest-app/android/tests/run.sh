@@ -14,3 +14,5 @@ javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/PlaybackChrome.java" "$HE
 java -cp "$OUT" org.questjellyfin.player.PlaybackChromeTest
 javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/VideoPresentation.java" "$HERE/VideoPresentationTest.java"
 java -cp "$OUT" org.questjellyfin.player.VideoPresentationTest
+javac --add-modules jdk.httpserver -d "$OUT" "$HERE/../src/org/questjellyfin/player/HttpRangeReader.java" "$HERE/HttpRangeReaderTest.java"
+java --add-modules jdk.httpserver -cp "$OUT" org.questjellyfin.player.HttpRangeReaderTest

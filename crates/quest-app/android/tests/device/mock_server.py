@@ -45,7 +45,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'Items':items,'TotalRecordCount':len(items)})
         elif '/Images/Primary' in path: self.send_bytes(poster(),'image/png')
         elif path == '/Videos/movie/stream':
-            data = open(video,'rb').read(); self.send_bytes(data,'video/mp4')
+            data = open(video,'rb').read()
+            requested = self.headers.get('Range')
+            if requested:
+                start, end = requested.removeprefix('bytes=').split('-')
+                start = int(start); end = min(int(end) if end else len(data)-1, len(data)-1)
+                self.send_response(206); self.send_header('Content-Type','video/mp4')
+                self.send_header('Content-Range',f'bytes {start}-{end}/{len(data)}')
+                self.send_header('Content-Length',str(end-start+1)); self.end_headers()
+                self.wfile.write(data[start:end+1])
+            else: self.send_bytes(data,'video/mp4')
         else: self.send_bytes(b'{}',status=404)
     def do_POST(self):
         global favorite

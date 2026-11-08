@@ -19,8 +19,9 @@ single-eye 2D option. 2D uses one complete cropped eye for both eyes, not the wh
 packed stereo texture.
 
 During preparation, buffering, seeks and detected playback stalls the movie's
-stereo layers are withheld. The neutral binocular controls and loading state
-remain available. Buffer completion before the first submitted layer is handled;
+surface remains submitted behind an opaque neutral cover, keeping the decoder's
+producer queue draining. Both eye views are hidden; binocular controls and the
+loading state remain available. Buffer completion before the first submitted layer is handled;
 seeking listeners remain active after resume and repeated transport actions.
 
 The regular non-secure hardware decoder is queried on the headset. When it reports
@@ -30,3 +31,11 @@ limits. User-selected bitrate and transcoding preferences continue to apply.
 Device capability reporting is not a throughput guarantee; real playback is still
 validated on the headset and server. No source resolution is silently reduced as
 a buffering workaround.
+
+Immersive Direct Play uses Android's public `MediaDataSource` API with an
+HTTP byte-range reader. Its LRU retains up to 128 MiB in 8 MiB pages, allowing
+interleaved audio/video reads and resumed seeks to reuse separate file ranges.
+Successful HTTP connections remain reusable. TLS verification stays enabled,
+authorization remains in headers, redirects and compressed/mismatched/truncated
+ranges are rejected, and closing the source cancels an outstanding read. HLS and
+server conversion keep the platform URL source. This does not re-encode media.

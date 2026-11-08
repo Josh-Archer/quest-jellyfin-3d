@@ -16,5 +16,6 @@ final class VideoPresentation {
         else if (frame && now - movedAt >= 1500) stalled = true;
     }
     boolean waiting() { return buffering || seeking || stalled; }
+    String diagnostics() { return "frame="+frame+" buffering="+buffering+" seeking="+seeking+" stalled="+stalled; }
     int state() { return waiting() ? 2 : frame ? 1 : 0; }
 }

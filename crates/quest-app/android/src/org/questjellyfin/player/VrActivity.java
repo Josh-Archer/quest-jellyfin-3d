@@ -30,6 +30,7 @@ public class VrActivity extends Activity {
     private JSONObject data;
     private String server, device, item;
     private MediaPlayer player;
+    private HttpMediaDataSource mediaSource;
     private Runnable afterSeek;
     private Surface surface;
     private boolean started;
@@ -45,6 +46,8 @@ public class VrActivity extends Activity {
     private volatile long xrEpoch;
     private PlaybackGate playbackGate = new PlaybackGate();
     private boolean prepared;
+    private long diagnosticAt;
+    private int bufferedPercent;
     private boolean readyToPlay;
     private volatile String videoTitle = "Jellyfin";
     private volatile String statusLabel = "Preparing…";
@@ -181,10 +184,18 @@ public class VrActivity extends Activity {
             int position = player.getCurrentPosition(), duration = player.getDuration();
             boolean playing = readyToPlay && player.isPlaying();
             presentation.observePosition(position, playing, android.os.SystemClock.elapsedRealtime()); publishPresentation();
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now - diagnosticAt >= 2000) {
+                diagnosticAt = now;
+                if (mediaSource != null) android.util.Log.i("Jellyfin3D", "Video range cache "+mediaSource.diagnostics());
+                android.os.PersistableBundle metrics = player.getMetrics();
+                android.util.Log.i("Jellyfin3D", "Video decoder="+metrics.getString(MediaPlayer.MetricsConstants.CODEC_VIDEO,"pending")+" frames="+metrics.getInt(MediaPlayer.MetricsConstants.FRAMES,-1)+" dropped="+metrics.getInt(MediaPlayer.MetricsConstants.FRAMES_DROPPED,-1));
+                android.util.Log.i("Jellyfin3D", "Video progress ms="+position+" playing="+playing+" buffered="+bufferedPercent+" layers="+videoLayerCount+" "+presentation.diagnostics());
+            }
             playLabel = playing ? "Pause" : "Play";
             progressFraction = duration > 0 ? Math.max(0f, Math.min(1f, (float)position / duration)) : 0f;
             transportTime = clock(position) + " / " + clock(duration);
-            statusLabel = !readyToPlay ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
+            statusLabel = !readyToPlay || presentation.state() == 0 ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
             nativePlaybackStatus(xrEpoch, playing && !buffering);
         } catch (IllegalStateException ignored) {}
         ui.postDelayed(() -> updateTransport(current), 250);
@@ -212,7 +223,10 @@ public class VrActivity extends Activity {
                 }
                 player = new MediaPlayer(); player.setSurface(surface);
                 HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
-                player.setDataSource(this, Uri.parse(data.getString("url")), headers);
+                if (data.optString("method").equals("DirectPlay")) {
+                    mediaSource = new HttpMediaDataSource(data.getString("url"), data.getString("authorization"));
+                    player.setDataSource(mediaSource);
+                } else player.setDataSource(this, Uri.parse(data.getString("url")), headers);
                 player.setOnInfoListener((mp, what, extra) -> {
                     if (!resumed || player != mp) return false;
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
@@ -220,12 +234,15 @@ public class VrActivity extends Activity {
                         android.util.Log.i("Jellyfin3D", "Decoder produced first video frame");
                         lastTicks = (long)mp.getCurrentPosition() * 10000;
                     }
+                    android.util.Log.i("Jellyfin3D", "Video info="+what+" extra="+extra);
                     if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) { presentation.buffering(true); publishPresentation(); }
                     else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) { presentation.buffering(false); publishPresentation(); }
                     return false;
                 });
+                player.setOnBufferingUpdateListener((mp, percent) -> { if (player == mp) bufferedPercent = percent; });
                 player.setOnSeekCompleteListener(mp -> {
                     if (player != mp) return;
+                    android.util.Log.i("Jellyfin3D", "Video seek complete ms="+mp.getCurrentPosition());
                     presentation.seeking(false); publishPresentation();
                     Runnable completion = afterSeek; afterSeek = null;
                     if (completion != null) completion.run();
@@ -276,6 +293,7 @@ public class VrActivity extends Activity {
             }, 15000);
         };
         if (resumeMs > 0 && resumeMs <= Integer.MAX_VALUE) {
+            android.util.Log.i("Jellyfin3D", "Video resume seek ms="+resumeMs);
             afterSeek = begin; presentation.seeking(true); publishPresentation();
             mp.seekTo(resumeMs, MediaPlayer.SEEK_CLOSEST);
         } else begin.run();
@@ -335,6 +353,7 @@ public class VrActivity extends Activity {
     }
     private void releasePlayer() {
         awaitingResizedSurface = false; prepared = false; readyToPlay = false;
+        if (mediaSource != null) { mediaSource.close(); mediaSource = null; }
         if (player != null) {
             if (started && !completed) { try { lastTicks = (long)player.getCurrentPosition() * 10000; } catch (IllegalStateException ignored) {} }
             player.release(); player = null;
