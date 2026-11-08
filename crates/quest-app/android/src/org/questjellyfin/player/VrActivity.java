@@ -195,7 +195,7 @@ public class VrActivity extends Activity {
             playLabel = playing ? "Pause" : "Play";
             progressFraction = duration > 0 ? Math.max(0f, Math.min(1f, (float)position / duration)) : 0f;
             transportTime = clock(position) + " / " + clock(duration);
-            statusLabel = !readyToPlay ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
+            statusLabel = !readyToPlay || presentation.state() == 0 ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
             nativePlaybackStatus(xrEpoch, playing && !buffering);
         } catch (IllegalStateException ignored) {}
         ui.postDelayed(() -> updateTransport(current), 250);
