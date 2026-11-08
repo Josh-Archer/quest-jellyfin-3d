@@ -30,6 +30,7 @@ public class VrActivity extends Activity {
     private JSONObject data;
     private String server, device, item;
     private MediaPlayer player;
+    private HttpMediaDataSource mediaSource;
     private Runnable afterSeek;
     private Surface surface;
     private boolean started;
@@ -186,6 +187,7 @@ public class VrActivity extends Activity {
             long now = android.os.SystemClock.elapsedRealtime();
             if (now - diagnosticAt >= 2000) {
                 diagnosticAt = now;
+                if (mediaSource != null) android.util.Log.i("Jellyfin3D", "Video range cache "+mediaSource.diagnostics());
                 android.os.PersistableBundle metrics = player.getMetrics();
                 android.util.Log.i("Jellyfin3D", "Video decoder="+metrics.getString(MediaPlayer.MetricsConstants.CODEC_VIDEO,"pending")+" frames="+metrics.getInt(MediaPlayer.MetricsConstants.FRAMES,-1)+" dropped="+metrics.getInt(MediaPlayer.MetricsConstants.FRAMES_DROPPED,-1));
                 android.util.Log.i("Jellyfin3D", "Video progress ms="+position+" playing="+playing+" buffered="+bufferedPercent+" layers="+videoLayerCount+" "+presentation.diagnostics());
@@ -221,7 +223,10 @@ public class VrActivity extends Activity {
                 }
                 player = new MediaPlayer(); player.setSurface(surface);
                 HashMap<String, String> headers = new HashMap<>(); headers.put("Authorization", data.getString("authorization")); headers.put("android-allow-cross-domain-redirect", "0");
-                player.setDataSource(this, Uri.parse(data.getString("url")), headers);
+                if (data.optString("method").equals("DirectPlay")) {
+                    mediaSource = new HttpMediaDataSource(data.getString("url"), data.getString("authorization"));
+                    player.setDataSource(mediaSource);
+                } else player.setDataSource(this, Uri.parse(data.getString("url")), headers);
                 player.setOnInfoListener((mp, what, extra) -> {
                     if (!resumed || player != mp) return false;
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
@@ -348,6 +353,7 @@ public class VrActivity extends Activity {
     }
     private void releasePlayer() {
         awaitingResizedSurface = false; prepared = false; readyToPlay = false;
+        if (mediaSource != null) { mediaSource.close(); mediaSource = null; }
         if (player != null) {
             if (started && !completed) { try { lastTicks = (long)player.getCurrentPosition() * 10000; } catch (IllegalStateException ignored) {} }
             player.release(); player = null;
