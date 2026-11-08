@@ -635,7 +635,7 @@ fn run_xr(
             }
             if last_diagnostic.elapsed() >= Duration::from_secs(2) {
                 diagnostic(&format!(
-                    "XR frame render={} tracked={} video={} submitted={submitted_frames}",
+                    "XR frame render={} tracked={} video_state={} submitted={submitted_frames}",
                     frame.should_render,
                     anchored,
                     VIDEO_STATE.load(Ordering::Acquire)
@@ -702,6 +702,9 @@ fn run_xr(
                 had_video_frame = true;
             }
             let present_video = had_video_frame && VIDEO_STATE.load(Ordering::Acquire) == 1;
+            // Keep consuming the Android Surface while waiting. Omitting its layers
+            // fills the producer queue and can prevent the first frame / seek from
+            // completing. A later opaque layer hides every eye until ready.
             let space = if anchored {
                 xr.stage_space()
             } else {
@@ -711,7 +714,7 @@ fn run_xr(
             let hud = xr.hud_swapchain().ok_or("No cinema control swapchain")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
             screen.screen_width_m = transform.size_m().0;
-            let quad_layers = if present_video
+            let quad_layers = if surface_started
                 && !spherical
                 && transform.display_mode == xr_core::DisplayMode::FlatQuad
             {
@@ -738,7 +741,7 @@ fn run_xr(
             } else {
                 quad_layers
             };
-            let cylinder_layers = if present_video
+            let cylinder_layers = if surface_started
                 && !spherical
                 && transform.display_mode == xr_core::DisplayMode::CurvedCylinder
             {
@@ -767,7 +770,7 @@ fn run_xr(
             } else {
                 cylinder_layers
             };
-            let equirect_layers = if present_video && spherical {
+            let equirect_layers = if surface_started && spherical {
                 let orientation =
                     panorama_orientation * Quat::from_axis_angle(Vec3::UNIT_X, view_tilt);
                 let pose: openxr::Posef = ScreenPose::new(Vec3::ZERO, orientation).into();
@@ -786,6 +789,16 @@ fn run_xr(
             } else {
                 Vec::new()
             };
+            let view_space = xr.view_space().ok_or("No cinema view reference space")?;
+            let waiting_cover = (!present_video).then(|| {
+                crate::cinema_atlas::quad(
+                    view_space,
+                    hud,
+                    (496, 0, 16, 16),
+                    ScreenPose::new(Vec3::new(0.0, 0.0, -0.5), Quat::IDENTITY),
+                    (16.0, 16.0),
+                )
+            });
             let mut overlays = Vec::new();
             let room = loft_anchor
                 .map(quest_jellyfin_player::environment::loft_surfaces)
@@ -913,12 +926,19 @@ fn run_xr(
             refs.extend(quad_layers.iter().map(|layer| &**layer));
             refs.extend(cylinder_layers.iter().map(|layer| &**layer));
             refs.extend(equirect_layers.iter().map(|layer| &**layer));
+            if let Some(ref cover) = waiting_cover {
+                refs.push(&**cover);
+            }
             refs.extend(control_cylinders.iter().map(|layer| &**layer));
             refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
                 .map_err(|e| e.to_string())?;
             let presentation = (
-                quad_layers.len() + cylinder_layers.len() + equirect_layers.len(),
+                if present_video {
+                    quad_layers.len() + cylinder_layers.len() + equirect_layers.len()
+                } else {
+                    0
+                },
                 comfort_mono,
             );
             if reported_presentation != Some(presentation) {

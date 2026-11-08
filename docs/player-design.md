@@ -19,8 +19,9 @@ single-eye 2D option. 2D uses one complete cropped eye for both eyes, not the wh
 packed stereo texture.
 
 During preparation, buffering, seeks and detected playback stalls the movie's
-stereo layers are withheld. The neutral binocular controls and loading state
-remain available. Buffer completion before the first submitted layer is handled;
+surface remains submitted behind an opaque neutral cover, keeping the decoder's
+producer queue draining. Both eye views are hidden; binocular controls and the
+loading state remain available. Buffer completion before the first submitted layer is handled;
 seeking listeners remain active after resume and repeated transport actions.
 
 The regular non-secure hardware decoder is queried on the headset. When it reports

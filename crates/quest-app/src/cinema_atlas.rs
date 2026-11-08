@@ -118,6 +118,13 @@ pub fn quad<'a>(
 }
 /// Downsample the shared assets into reserved atlas rectangles, retaining the same DeskQuest art.
 pub fn add_handles(rgba: &mut [u8]) {
+    // Opaque neutral patch, separate from materials and controller handles.
+    for y in 0..16 {
+        for x in 496..512 {
+            let at = (y * 512 + x) * 4;
+            rgba[at..at + 4].copy_from_slice(&[26, 26, 26, 255]);
+        }
+    }
     blit(
         rgba,
         &xr_core::openxr::overlay::cursor_rgba(),
