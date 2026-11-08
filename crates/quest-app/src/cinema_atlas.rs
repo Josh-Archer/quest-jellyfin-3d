@@ -7,7 +7,16 @@ use xr_core::spatial::ScreenTransform;
 use xr_video::graphics::vulkan::VulkanContext;
 
 pub fn upload(sc: &Swapchain<Vulkan>, vulkan: &VulkanContext, rgba: &[u8]) -> Result<(), String> {
-    if rgba.len() != 512 * 256 * 4 {
+    upload_sized(sc, vulkan, rgba, 512, 256)
+}
+pub fn upload_sized(
+    sc: &Swapchain<Vulkan>,
+    vulkan: &VulkanContext,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if rgba.len() != width as usize * height as usize * 4 {
         return Err("Invalid cinema atlas size".into());
     }
     let images = sc.enumerate_images().map_err(|e| e.to_string())?;
@@ -33,7 +42,7 @@ pub fn upload(sc: &Swapchain<Vulkan>, vulkan: &VulkanContext, rgba: &[u8]) -> Re
             .ok_or_else(|| "Invalid HUD image index".into())
             .and_then(|raw| {
                 vulkan
-                    .upload_rgba_to_image(vk::Image::from_raw(*raw), 512, 256, rgba)
+                    .upload_rgba_to_image(vk::Image::from_raw(*raw), width, height, rgba)
                     .map_err(|e| e.to_string())
             });
         let released = check((fp.release_swapchain_image)(sc.as_raw(), std::ptr::null()));

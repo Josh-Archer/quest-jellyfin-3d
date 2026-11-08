@@ -81,3 +81,28 @@ fn codec_frame_rate_caps_transcode_above_8k30_and_4k60() {
         DirectPlayDecision::DirectPlay
     );
 }
+
+#[test]
+fn measured_hardware_tier_preserves_8k60_hevc_without_widening_other_caps() {
+    use quest_app::playback_profile::{evaluate_for_decoder, profile_for_decoder};
+    let measured = profile_for_decoder(true);
+    let hevc = item("hevc", 7680, 3840, 60.0);
+    assert_eq!(
+        evaluate_for_decoder(&measured, &hevc, true),
+        DirectPlayDecision::DirectPlay
+    );
+    assert!(matches!(
+        evaluate_for_decoder(&measured, &hevc, false),
+        DirectPlayDecision::TranscodeRequired { .. }
+    ));
+    for unsupported in [
+        item("hevc", 8192, 4320, 60.0),
+        item("hevc", 7680, 4320, 60.1),
+        item("av1", 7680, 3840, 60.0),
+    ] {
+        assert!(matches!(
+            evaluate_for_decoder(&measured, &unsupported, true),
+            DirectPlayDecision::TranscodeRequired { .. }
+        ));
+    }
+}

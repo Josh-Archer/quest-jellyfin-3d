@@ -87,6 +87,15 @@ pub fn parse_projection(value: &str) -> Result<Projection, &'static str> {
     }
 }
 
+pub fn swap_eye_order(order: EyeOrder) -> EyeOrder {
+    match order {
+        EyeOrder::LeftRight => EyeOrder::RightLeft,
+        EyeOrder::RightLeft => EyeOrder::LeftRight,
+        EyeOrder::TopBottom => EyeOrder::BottomTop,
+        EyeOrder::BottomTop => EyeOrder::TopBottom,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +151,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn swapping_eyes_is_reversible_for_each_packing_axis() {
+        for order in [
+            EyeOrder::LeftRight,
+            EyeOrder::RightLeft,
+            EyeOrder::TopBottom,
+            EyeOrder::BottomTop,
+        ] {
+            assert_ne!(swap_eye_order(order), order);
+            assert_eq!(swap_eye_order(swap_eye_order(order)), order);
+        }
+    }
     #[test]
     fn only_supported_projections_reach_the_compositor() {
         assert_eq!(parse_projection("Flat"), Ok(Projection::Flat));

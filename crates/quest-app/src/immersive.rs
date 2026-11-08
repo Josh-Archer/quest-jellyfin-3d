@@ -121,6 +121,8 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
     format: JString<'_>,
     order: JString<'_>,
     projection: JString<'_>,
+    swap_eyes: jboolean,
+    comfort_mono: jboolean,
     passthrough: jboolean,
     screen_width: jfloat,
     screen_distance: jfloat,
@@ -178,6 +180,8 @@ pub extern "system" fn Java_org_questjellyfin_player_VrActivity_nativeRun(
                     format,
                     order,
                     projection,
+                    swap_eyes: swap_eyes != 0,
+                    comfort_mono: comfort_mono != 0,
                     passthrough: passthrough != 0,
                     screen_width: if screen_width.is_finite() {
                         screen_width.clamp(1.5, 6.0)
@@ -216,6 +220,8 @@ struct XrPlayback {
     format: StereoFormat,
     order: EyeOrder,
     projection: Projection,
+    swap_eyes: bool,
+    comfort_mono: bool,
     passthrough: bool,
     screen_width: f32,
     screen_distance: f32,
@@ -231,13 +237,18 @@ fn run_xr(
         width,
         height,
         format,
-        order,
+        mut order,
         mut projection,
+        mut swap_eyes,
+        mut comfort_mono,
         passthrough,
         screen_width,
         screen_distance,
         epoch,
     } = playback;
+    if swap_eyes {
+        order = crate::surface_size::swap_eye_order(order);
+    }
     let spherical = projection != Projection::Flat;
     let passthrough = passthrough && !spherical;
     let mut view_tilt = 0.0_f32;
@@ -292,10 +303,16 @@ fn run_xr(
     if !spherical && xr.supports_cylinder() && curve.is_finite() {
         quest_jellyfin_player::screen_controls::bend(&mut transform, curve.clamp(0.0, 2.4));
     }
+    if spherical {
+        transform.quad_size = (2.8, 1.6);
+        transform.aspect_ratio = 2.8 / 1.6;
+    }
     let mut anchored = false;
     let mut panorama_orientation = Quat::IDENTITY;
     let mut atlas_ready = false;
-    let mut atlas_visual = (-1, false, -1);
+    let mut atlas_visual = (-1, -1, false, -1);
+    let mut pressed_visual = (-1, std::time::Instant::now() - Duration::from_secs(1));
+    let mut ui_swapchain = None;
     let mut atlas_refresh = std::time::Instant::now() - Duration::from_secs(1);
     let mut frame_clock = std::time::Instant::now();
     let mut had_video_frame = false;
@@ -304,6 +321,7 @@ fn run_xr(
     let mut previous_session_state = None;
     let mut submitted_frames = 0_u64;
     let mut reported_video_layer = false;
+    let mut reported_presentation = None;
     let render_result = (|| -> Result<(), String> {
         while EPOCH.load(Ordering::Acquire) == epoch && !xr.should_exit() {
             xr.poll_events().map_err(|e| e.to_string())?;
@@ -333,6 +351,29 @@ fn run_xr(
             if !xr.swapchains_created() {
                 xr.create_swapchains(&config).map_err(|e| e.to_string())?;
                 diagnostic("XR swapchains created");
+                ui_swapchain = xr
+                    .create_ui_swapchain(1536, 784)
+                    .map_err(|e| e.to_string())?;
+                let pixels = env
+                    .call_method(activity, "environmentPixels", "()[B", &[])
+                    .map_err(|_| "Cannot draw room materials")?
+                    .l()
+                    .map_err(|_| "Invalid room materials")?;
+                let bytes = JByteArray::from(pixels);
+                let mut rgba = env
+                    .convert_byte_array(&bytes)
+                    .map_err(|_| "Invalid room pixels")?;
+                env.delete_local_ref(bytes)
+                    .map_err(|_| "Cannot release room pixels")?;
+                if rgba.len() != 512 * 256 * 4 {
+                    return Err("Invalid room atlas dimensions".into());
+                }
+                crate::cinema_atlas::add_handles(&mut rgba);
+                crate::cinema_atlas::upload(
+                    xr.hud_swapchain().ok_or("No room swapchain")?,
+                    &vulkan,
+                    &rgba,
+                )?;
             }
             if surface_started {
                 let pending = VIDEO_SIZE.lock().ok().and_then(|mut value| value.take());
@@ -355,9 +396,11 @@ fn run_xr(
                         let aspect = quest_jellyfin_player::calculate_display_aspect_ratio(
                             format, width, height,
                         );
-                        transform.quad_size =
-                            crate::surface_size::immersive_quad_size(w, format, width, height);
-                        transform.aspect_ratio = aspect;
+                        if !spherical {
+                            transform.quad_size =
+                                crate::surface_size::immersive_quad_size(w, format, width, height);
+                            transform.aspect_ratio = aspect;
+                        }
                         had_video_frame = false;
                         surface_started = false;
                     }
@@ -451,6 +494,7 @@ fn run_xr(
                 controls.suspend();
             }
             if let Some(command) = command {
+                pressed_visual = (command.artwork_id(), std::time::Instant::now());
                 let code = match command {
                     Button::Seek(fraction) => {
                         env.call_method(
@@ -466,6 +510,26 @@ fn run_xr(
                     Button::Back => Some(1),
                     Button::Forward => Some(2),
                     Button::Audio => Some(3),
+                    Button::SwapEyes | Button::ComfortMono => {
+                        if command == Button::SwapEyes {
+                            swap_eyes = !swap_eyes;
+                            order = crate::surface_size::swap_eye_order(order);
+                        } else {
+                            comfort_mono = !comfort_mono;
+                        }
+                        env.call_method(
+                            activity,
+                            "onXrStereoChanged",
+                            "(JZZ)V",
+                            &[
+                                JValue::Long(epoch as jlong),
+                                JValue::Bool(u8::from(swap_eyes)),
+                                JValue::Bool(u8::from(comfort_mono)),
+                            ],
+                        )
+                        .map_err(|_| "Cannot update stereo view")?;
+                        None
+                    }
                     Button::Exit => Some(4),
                     Button::Smaller => {
                         if spherical {
@@ -565,7 +629,7 @@ fn run_xr(
                 .map_err(|_| "Cannot save screen preferences")?;
             }
             controls.advance(PLAYING.load(Ordering::Acquire) != 0 && had_video_frame, dt);
-            if !had_video_frame {
+            if !had_video_frame || VIDEO_STATE.load(Ordering::Acquire) != 1 {
                 controls.visible = true;
                 controls.opacity = 1.0;
             }
@@ -587,21 +651,27 @@ fn run_xr(
             // paused, or buffering. Transport never depends on the decoder's first frame.
             let visual = (
                 controls.hovered.map(Button::artwork_id).unwrap_or(-1),
+                if pressed_visual.1.elapsed() < Duration::from_millis(140) {
+                    pressed_visual.0
+                } else {
+                    -1
+                },
                 controls.tools_open,
                 (controls.opacity * 20.0).round() as i32,
             );
-            if atlas_refresh.elapsed() >= Duration::from_millis(250)
+            if (controls.opacity > 0.001 && atlas_refresh.elapsed() >= Duration::from_millis(250))
                 || !atlas_ready
                 || visual != atlas_visual
             {
                 let pixels = env
                     .call_method(
                         activity,
-                        "controlsPixels",
-                        "(IZF)[B",
+                        "controlsPixelsWithState",
+                        "(IIZF)[B",
                         &[
                             JValue::Int(visual.0),
-                            JValue::Bool(u8::from(visual.1)),
+                            JValue::Int(visual.1),
+                            JValue::Bool(u8::from(visual.2)),
                             JValue::Float(controls.opacity),
                         ],
                     )
@@ -609,19 +679,20 @@ fn run_xr(
                     .l()
                     .map_err(|_| "Invalid cinema controls")?;
                 let bytes = JByteArray::from(pixels);
-                let mut rgba = env
+                let rgba = env
                     .convert_byte_array(&bytes)
                     .map_err(|_| "Invalid control pixels")?;
                 env.delete_local_ref(bytes)
                     .map_err(|_| "Cannot release control pixels")?;
-                if rgba.len() != 512 * 256 * 4 {
+                if rgba.len() != 1536 * 784 * 4 {
                     return Err("Invalid cinema controls dimensions".into());
                 }
-                crate::cinema_atlas::add_handles(&mut rgba);
-                crate::cinema_atlas::upload(
-                    xr.hud_swapchain().ok_or("No cinema control swapchain")?,
+                crate::cinema_atlas::upload_sized(
+                    ui_swapchain.as_ref().ok_or("No control swapchain")?,
                     &vulkan,
                     &rgba,
+                    1536,
+                    784,
                 )?;
                 atlas_ready = true;
                 atlas_visual = visual;
@@ -630,6 +701,7 @@ fn run_xr(
             if VIDEO_STATE.load(Ordering::Acquire) == 1 {
                 had_video_frame = true;
             }
+            let present_video = had_video_frame && VIDEO_STATE.load(Ordering::Acquire) == 1;
             let space = if anchored {
                 xr.stage_space()
             } else {
@@ -639,7 +711,7 @@ fn run_xr(
             let hud = xr.hud_swapchain().ok_or("No cinema control swapchain")?;
             let swapchain = xr.desktop_swapchain().ok_or("No OpenXR video swapchain")?;
             screen.screen_width_m = transform.size_m().0;
-            let quad_layers = if had_video_frame
+            let quad_layers = if present_video
                 && !spherical
                 && transform.display_mode == xr_core::DisplayMode::FlatQuad
             {
@@ -657,7 +729,16 @@ fn run_xr(
             } else {
                 Vec::new()
             };
-            let cylinder_layers = if had_video_frame
+            let quad_layers = if comfort_mono {
+                quad_layers
+                    .into_iter()
+                    .take(1)
+                    .map(|layer| layer.eye_visibility(openxr::EyeVisibility::BOTH))
+                    .collect::<Vec<_>>()
+            } else {
+                quad_layers
+            };
+            let cylinder_layers = if present_video
                 && !spherical
                 && transform.display_mode == xr_core::DisplayMode::CurvedCylinder
             {
@@ -677,7 +758,16 @@ fn run_xr(
             } else {
                 Vec::new()
             };
-            let equirect_layers = if had_video_frame && spherical {
+            let cylinder_layers = if comfort_mono {
+                cylinder_layers
+                    .into_iter()
+                    .take(1)
+                    .map(|layer| layer.eye_visibility(openxr::EyeVisibility::BOTH))
+                    .collect::<Vec<_>>()
+            } else {
+                cylinder_layers
+            };
+            let equirect_layers = if present_video && spherical {
                 let orientation =
                     panorama_orientation * Quat::from_axis_angle(Vec3::UNIT_X, view_tilt);
                 let pose: openxr::Posef = ScreenPose::new(Vec3::ZERO, orientation).into();
@@ -695,6 +785,15 @@ fn run_xr(
             } else {
                 Vec::new()
             };
+            let equirect_layers = if comfort_mono {
+                equirect_layers
+                    .into_iter()
+                    .take(1)
+                    .map(|layer| layer.eye_visibility(openxr::EyeVisibility::BOTH))
+                    .collect::<Vec<_>>()
+            } else {
+                equirect_layers
+            };
             let mut overlays = Vec::new();
             let room = loft_anchor
                 .map(quest_jellyfin_player::environment::loft_surfaces)
@@ -708,17 +807,23 @@ fn run_xr(
             let panel = panel_transform(&transform, controls.tools_open);
             let mut control_cylinders = Vec::new();
             if controls.opacity > 0.001 || !had_video_frame {
-                let rect = (0, 0, 512, artwork_height(controls.tools_open));
+                let rect = (0, 0, 1536, artwork_height(controls.tools_open) * 2);
+                let control_texture = ui_swapchain.as_ref().ok_or("No control texture")?;
                 if panel.display_mode == xr_core::DisplayMode::FlatQuad {
                     overlays.push(crate::cinema_atlas::quad(
                         space,
-                        hud,
+                        control_texture,
                         rect,
                         panel.pose(),
                         panel.size_m(),
                     ));
                 } else {
-                    control_cylinders.push(crate::cinema_atlas::cylinder(space, hud, rect, &panel));
+                    control_cylinders.push(crate::cinema_atlas::cylinder(
+                        space,
+                        control_texture,
+                        rect,
+                        &panel,
+                    ));
                 }
             }
             if had_video_frame
@@ -820,6 +925,24 @@ fn run_xr(
             refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)
                 .map_err(|e| e.to_string())?;
+            let presentation = (
+                quad_layers.len() + cylinder_layers.len() + equirect_layers.len(),
+                comfort_mono,
+            );
+            if reported_presentation != Some(presentation) {
+                env.call_method(
+                    activity,
+                    "onXrPresentationChanged",
+                    "(JIZ)V",
+                    &[
+                        JValue::Long(epoch as jlong),
+                        JValue::Int(presentation.0 as i32),
+                        JValue::Bool(u8::from(comfort_mono)),
+                    ],
+                )
+                .map_err(|_| "Cannot confirm current stereo presentation")?;
+                reported_presentation = Some(presentation);
+            }
             submitted_frames += 1;
             if !reported_controls {
                 env.call_method(
@@ -832,7 +955,7 @@ fn run_xr(
                 diagnostic("XR controls layer submitted");
                 reported_controls = true;
             }
-            if had_video_frame && !reported_video_layer {
+            if presentation.0 > 0 && !reported_video_layer {
                 if !equirect_layers.is_empty() {
                     env.call_method(
                         activity,

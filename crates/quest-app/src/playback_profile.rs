@@ -80,3 +80,51 @@ pub fn evaluate_direct_play(profile: &DeviceProfile, item: &BaseItem) -> DirectP
     }
     DirectPlayDecision::DirectPlay
 }
+
+/// Use only the capability reported by a non-secure hardware decoder on this headset.
+/// Keep wider 8192-pixel sources on the conservative profile rather than assuming 8K60.
+pub fn profile_for_decoder(hevc_8k60: bool) -> DeviceProfile {
+    let mut profile = quest_device_profile();
+    if hevc_8k60 {
+        for codec in &mut profile.codec_profiles {
+            if codec.codec == "hevc" {
+                set_limit(&mut codec.conditions, "Width", "7680");
+                set_limit(&mut codec.conditions, "VideoFramerate", "60");
+            }
+        }
+    }
+    profile
+}
+
+pub fn evaluate_for_decoder(
+    profile: &DeviceProfile,
+    item: &BaseItem,
+    hevc_8k60: bool,
+) -> DirectPlayDecision {
+    let Some(video) = item.video_stream() else {
+        return evaluate_direct_play(profile, item);
+    };
+    let rate = video
+        .real_frame_rate
+        .or(video.average_frame_rate)
+        .unwrap_or(0.0);
+    let proven = hevc_8k60
+        && matches!(video.codec.as_deref(), Some("hevc" | "h265"))
+        && video.width.is_some_and(|w| w > 0 && w <= 7680)
+        && video.height.is_some_and(|h| h > 0 && h <= 4320)
+        && rate > 0.0
+        && rate <= 60.0;
+    if proven {
+        // The shared legacy evaluator has a fixed 8K30 check. Preserve every other rule
+        // while using the real decoder's higher frame-rate tier for this exact source.
+        let mut conservative = item.clone();
+        for stream in &mut conservative.media_streams {
+            if stream.stream_type == Some(MediaStreamType::Video) {
+                stream.real_frame_rate = Some(30.0);
+                stream.average_frame_rate = Some(30.0);
+            }
+        }
+        return evaluate_direct_play(profile, &conservative);
+    }
+    evaluate_direct_play(profile, item)
+}
