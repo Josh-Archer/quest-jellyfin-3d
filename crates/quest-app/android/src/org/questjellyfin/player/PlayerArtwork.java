@@ -9,6 +9,12 @@ final class PlayerArtwork {
     static byte[] pixels(String title, String status, String time, String audio, String screen,
                          boolean playing, boolean spherical, boolean loading, float progressValue,
                          int hovered, int pressed, boolean tools, float opacity, boolean mono, boolean swapped) {
+        return pixels(title,status,time,audio,screen,playing,spherical,loading,progressValue,hovered,pressed,tools,opacity,mono,swapped,0f,false);
+    }
+    static byte[] pixels(String title, String status, String time, String audio, String screen,
+                         boolean playing, boolean spherical, boolean loading, float progressValue,
+                         int hovered, int pressed, boolean tools, float opacity, boolean mono, boolean swapped,
+                         float alignment, boolean alignmentAvailable) {
         Bitmap bitmap = Bitmap.createBitmap(HorizonStyle.WIDTH * HorizonStyle.SCALE,
             HorizonStyle.TOOLS_HEIGHT * HorizonStyle.SCALE, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bitmap); c.scale(HorizonStyle.SCALE, HorizonStyle.SCALE);
@@ -44,7 +50,7 @@ final class PlayerArtwork {
         text(c,p,status,loading ? 586 : 554,44,16,HorizonStyle.TEXT_SECONDARY,false,loading ? 102 : 126);
         c.restore();
         if (tools) {
-            text(c,p,spherical ? "View settings" : "Screen settings",24,30,20,HorizonStyle.TEXT,true,680);
+            text(c,p,spherical ? (alignmentAvailable ? String.format(java.util.Locale.ROOT,"View settings · Alignment %+.1f°",alignment) : "View settings") : "Screen settings",24,30,20,HorizonStyle.TEXT,true,680);
             String[] names=spherical ? new String[]{"Tilt −","Tilt +","180°","360°","Recenter"} : new String[]{"Smaller","Larger","Flatter","Curve +","Recenter"};
             for(int i=0;i<5;i++) {
                 float left=24+i*146.4f;
@@ -55,8 +61,17 @@ final class PlayerArtwork {
             centered(c,p,mono ? "2D view" : "Stereo view",124,153,18,HorizonStyle.TEXT,176);
             button(c,p,hovered,pressed,13,240,116,200,60,false,swapped);
             centered(c,p,swapped ? "Eyes swapped" : "Swap eyes",340,153,18,HorizonStyle.TEXT,176);
-            text(c,p,"Choose the view that",464,139,16,HorizonStyle.TEXT_SECONDARY,false,280);
-            text(c,p,"feels comfortable.",464,162,16,HorizonStyle.TEXT_SECONDARY,false,280);
+            if (alignmentAvailable) {
+                button(c,p,hovered,pressed,15,464,116,80,60,false,false);
+                centered(c,p,"Align −",504,153,18,HorizonStyle.TEXT,68);
+                button(c,p,hovered,pressed,16,556,116,80,60,false,false);
+                centered(c,p,"Align +",596,153,18,HorizonStyle.TEXT,68);
+                button(c,p,hovered,pressed,17,648,116,96,60,false,false);
+                centered(c,p,"Reset",696,153,18,HorizonStyle.TEXT,80);
+            } else {
+                text(c,p,"Choose the view that",464,139,16,HorizonStyle.TEXT_SECONDARY,false,280);
+                text(c,p,"feels comfortable.",464,162,16,HorizonStyle.TEXT_SECONDARY,false,280);
+            }
             p.setColor(0x44707882); c.drawRect(24,191,744,192,p);
         }
         return rgba(bitmap,opacity);

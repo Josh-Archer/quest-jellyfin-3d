@@ -39,3 +39,11 @@ Successful HTTP connections remain reusable. TLS verification stays enabled,
 authorization remains in headers, redirects and compressed/mismatched/truncated
 ranges are rejected, and closing the source cancels an outstanding read. HLS and
 server conversion keep the platform URL source. This does not re-encode media.
+
+VR180/VR360 packed stereo also has per-title horizontal alignment under View.
+Align + / Align − adjust relative eye orientation by 0.5°; holding either button
+repeats after an initial delay. The bounded range is −8° to +8°, and Reset returns
+to the original zero correction. Eye crops, source resolution, panorama coverage,
+and headset IPD are unchanged. The single-eye 2D view bypasses this correction.
+This is a manual viewing adjustment for recorded disparity, not a repair of the
+recording's stereo depth. Confirm packing, projection and eye order first.

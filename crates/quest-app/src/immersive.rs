@@ -276,6 +276,14 @@ fn run_xr(
     }
     let mut size = crate::surface_size::SurfaceSize::new(width, height, format, order)?;
     let mut controls = ScreenControls::default();
+    controls.stereo_alignment_supported =
+        spherical && quest_jellyfin_player::is_packed_stereo(format);
+    let mut alignment = quest_jellyfin_player::projection::StereoAlignment::from_degrees(
+        env.call_method(activity, "initialAlignment", "()F", &[])
+            .map_err(|_| "Cannot read stereo alignment")?
+            .f()
+            .map_err(|_| "Invalid stereo alignment")?,
+    );
     let mut gestures = HandGestureDetector::default();
     let loft = !spherical
         && !passthrough
@@ -530,6 +538,24 @@ fn run_xr(
                         .map_err(|_| "Cannot update stereo view")?;
                         None
                     }
+                    Button::AlignMinus | Button::AlignPlus | Button::ResetAlignment => {
+                        match command {
+                            Button::AlignMinus => alignment.adjust_steps(-1),
+                            Button::AlignPlus => alignment.adjust_steps(1),
+                            _ => alignment = Default::default(),
+                        }
+                        env.call_method(
+                            activity,
+                            "onXrAlignmentChanged",
+                            "(JF)V",
+                            &[
+                                JValue::Long(epoch as jlong),
+                                JValue::Float(alignment.degrees()),
+                            ],
+                        )
+                        .map_err(|_| "Cannot save stereo alignment")?;
+                        None
+                    }
                     Button::Exit => Some(4),
                     Button::Smaller => {
                         if spherical {
@@ -774,7 +800,7 @@ fn run_xr(
                 let orientation =
                     panorama_orientation * Quat::from_axis_angle(Vec3::UNIT_X, view_tilt);
                 let pose: openxr::Posef = ScreenPose::new(Vec3::ZERO, orientation).into();
-                quest_jellyfin_player::projection::build_equirect_layers(
+                quest_jellyfin_player::projection::build_equirect_layers_aligned(
                     space,
                     swapchain,
                     format,
@@ -784,6 +810,7 @@ fn run_xr(
                     projection,
                     pose,
                     comfort_mono,
+                    alignment,
                 )
                 .map_err(|e| e.to_string())?
             } else {

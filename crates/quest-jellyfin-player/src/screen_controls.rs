@@ -24,6 +24,9 @@ pub enum Button {
     Screen,
     SwapEyes,
     ComfortMono,
+    AlignMinus,
+    AlignPlus,
+    ResetAlignment,
 }
 
 pub const ARTWORK_WIDTH: i32 = 768;
@@ -67,6 +70,15 @@ pub fn button_at((u, v): (f32, f32), tools: bool) -> Option<Button> {
         }
         if (240.0..440.0).contains(&x) {
             return Some(Button::SwapEyes);
+        }
+        for (left, right, button) in [
+            (464.0, 544.0, Button::AlignMinus),
+            (556.0, 636.0, Button::AlignPlus),
+            (648.0, 744.0, Button::ResetAlignment),
+        ] {
+            if (left..right).contains(&x) {
+                return Some(button);
+            }
         }
     }
     if tools {
@@ -112,6 +124,9 @@ impl Button {
             Self::Seek(_) => 12,
             Self::SwapEyes => 13,
             Self::ComfortMono => 14,
+            Self::AlignMinus => 15,
+            Self::AlignPlus => 16,
+            Self::ResetAlignment => 17,
         }
     }
 }
@@ -170,12 +185,14 @@ pub struct ScreenControls {
     pub grab: GrabStateMachine,
     pub visible: bool,
     pub tools_open: bool,
+    pub stereo_alignment_supported: bool,
     pub hovered: Option<Button>,
     pub opacity: f32,
     idle_seconds: f32,
     playing: bool,
     pointing_at_controls: bool,
     pressed: [bool; 4],
+    alignment_hold: [Option<(Button, f32)>; 4],
 }
 impl Default for ScreenControls {
     fn default() -> Self {
@@ -183,12 +200,14 @@ impl Default for ScreenControls {
             grab: GrabStateMachine::new(),
             visible: true,
             tools_open: false,
+            stereo_alignment_supported: false,
             hovered: None,
             opacity: 1.0,
             idle_seconds: 0.0,
             playing: false,
             pointing_at_controls: false,
             pressed: [false; 4],
+            alignment_hold: [None; 4],
         }
     }
 }
@@ -206,6 +225,7 @@ impl ScreenControls {
     pub fn suspend(&mut self) {
         self.grab.release();
         self.pressed = [true; 4];
+        self.alignment_hold = [None; 4];
         self.visible = true;
         self.idle_seconds = 0.0;
         self.hovered = None;
@@ -250,10 +270,21 @@ impl ScreenControls {
             self.grab.release();
             active = None;
         }
+        for index in 0..4 {
+            if !inputs
+                .iter()
+                .any(|input| source_index(input.source) == index)
+            {
+                self.alignment_hold[index] = None;
+            }
+        }
         for input in inputs {
             let index = source_index(input.source);
             let click = input.is_selecting && !self.pressed[index];
             self.pressed[index] = input.is_selecting;
+            if !input.is_selecting {
+                self.alignment_hold[index] = None;
+            }
             let panel_hit = input
                 .aim_ray
                 .as_ref()
@@ -261,16 +292,47 @@ impl ScreenControls {
             let mut candidate = *input;
             if panel_hit.is_some() && active.is_none() {
                 self.pointing_at_controls = true;
-                let target = panel_hit.and_then(|hit| button_at(hit.uv, self.tools_open));
+                let target = panel_hit
+                    .and_then(|hit| button_at(hit.uv, self.tools_open))
+                    .filter(|button| {
+                        self.stereo_alignment_supported
+                            || !matches!(
+                                button,
+                                Button::AlignMinus | Button::AlignPlus | Button::ResetAlignment
+                            )
+                    });
                 if self.hovered.is_none() || click {
                     self.hovered = target;
                 }
                 candidate.is_grabbing = false;
                 candidate.aim_ray = None;
-                if click && action.is_none() {
+                let mut repeat = false;
+                if click {
+                    self.alignment_hold[index] = target
+                        .filter(|button| matches!(button, Button::AlignMinus | Button::AlignPlus))
+                        .map(|button| (button, 0.45));
+                } else if input.is_selecting {
+                    if let Some((button, remaining)) = &mut self.alignment_hold[index] {
+                        if Some(*button) == target {
+                            *remaining -= if dt.is_finite() {
+                                dt.clamp(0.0, 0.25)
+                            } else {
+                                0.0
+                            };
+                            if *remaining <= 0.0 {
+                                repeat = true;
+                                *remaining += 0.15;
+                            }
+                        } else {
+                            self.alignment_hold[index] = None;
+                        }
+                    }
+                }
+                if (click || repeat) && action.is_none() {
                     action = target;
                 }
             } else {
+                self.alignment_hold[index] = None;
                 let hit = input
                     .aim_ray
                     .as_ref()
@@ -355,6 +417,62 @@ mod tests {
             is_grabbing: false,
             is_selecting: select,
             thumbstick: (0.0, 0.0),
+        }
+    }
+    #[test]
+    fn alignment_is_opt_in_and_hold_repeat_requires_a_fresh_press_after_focus_loss() {
+        let mut controls = ScreenControls {
+            tools_open: true,
+            ..Default::default()
+        };
+        let mut screen = screen();
+        let at = panel_transform(&screen, true)
+            .surface_pose(596.0 / 768.0, 146.0 / 392.0)
+            .position;
+        let released = input(at, false);
+        let held = input(at, true);
+        controls.update(&[released], head(), &mut screen, 0.01);
+        assert_eq!(controls.update(&[held], head(), &mut screen, 0.01), None);
+        controls.stereo_alignment_supported = true;
+        controls.update(&[released], head(), &mut screen, 0.01);
+        assert_eq!(
+            controls.update(&[held], head(), &mut screen, 0.01),
+            Some(Button::AlignPlus)
+        );
+        for _ in 0..4 {
+            assert_eq!(controls.update(&[held], head(), &mut screen, 0.1), None);
+        }
+        assert_eq!(
+            controls.update(&[held], head(), &mut screen, 0.1),
+            Some(Button::AlignPlus)
+        );
+        controls.update(&[], head(), &mut screen, 0.1);
+        for _ in 0..10 {
+            assert_eq!(controls.update(&[held], head(), &mut screen, 0.1), None);
+        }
+        controls.update(&[released], head(), &mut screen, 0.01);
+        assert_eq!(
+            controls.update(&[held], head(), &mut screen, 0.01),
+            Some(Button::AlignPlus)
+        );
+        controls.suspend();
+        for _ in 0..10 {
+            assert_eq!(controls.update(&[held], head(), &mut screen, 0.1), None);
+        }
+        controls.update(&[released], head(), &mut screen, 0.01);
+        assert_eq!(
+            controls.update(&[held], head(), &mut screen, 0.01),
+            Some(Button::AlignPlus)
+        );
+        for (x, expected) in [
+            (504.0, Button::AlignMinus),
+            (596.0, Button::AlignPlus),
+            (696.0, Button::ResetAlignment),
+        ] {
+            assert_eq!(button_at((x / 768.0, 146.0 / 392.0), true), Some(expected));
+        }
+        for x in [550.0, 642.0] {
+            assert_eq!(button_at((x / 768.0, 146.0 / 392.0), true), None);
         }
     }
     #[test]

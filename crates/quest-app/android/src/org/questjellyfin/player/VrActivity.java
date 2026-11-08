@@ -59,6 +59,7 @@ public class VrActivity extends Activity {
     private volatile boolean controlsSubmitted;
     private volatile boolean swapped;
     private volatile boolean comfortMono;
+    private volatile float alignmentDegrees;
     private volatile boolean buffering;
     private VideoPresentation presentation = new VideoPresentation();
     private final android.content.BroadcastReceiver screenOff = new android.content.BroadcastReceiver() {
@@ -84,6 +85,7 @@ public class VrActivity extends Activity {
             videoTitle = data.optString("title", "Jellyfin");
             swapped = getSharedPreferences("app",0).getBoolean("swap_eyes."+getIntent().getStringExtra("item"),false);
             comfortMono = getSharedPreferences("app",0).getBoolean("comfort_mono."+getIntent().getStringExtra("item"),false);
+            alignmentDegrees = QuestPreferences.stereoAlignment(getSharedPreferences("app",0).getFloat("stereo_alignment."+getIntent().getStringExtra("item"),0f));
             server = getIntent().getStringExtra("server"); device = getIntent().getStringExtra("device"); item = getIntent().getStringExtra("item");
         } catch (Exception e) { fail("Unable to read the selected playback source."); }
     }
@@ -121,9 +123,17 @@ public class VrActivity extends Activity {
     public byte[] controlsPixelsWithState(int hovered, int pressed, boolean tools, float opacity) {
         return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, screenStatus,
             "Pause".equals(playLabel), isSpherical(), buffering || statusLabel.startsWith("Preparing"), progressFraction,
-            hovered,pressed,tools,opacity,comfortMono || data.optString("format","Mono").equals("Mono"),swapped);
+            hovered,pressed,tools,opacity,comfortMono || data.optString("format","Mono").equals("Mono"),swapped,alignmentDegrees,hasStereoAlignment());
     }
     public byte[] environmentPixels() { return PlayerArtwork.environmentPixels(); }
+    public float initialAlignment() { return alignmentDegrees; }
+    public boolean hasStereoAlignment() { return isSpherical() && (data.optString("format").endsWith("SideBySide") || data.optString("format").endsWith("OverUnder")); }
+    public void onXrAlignmentChanged(long epoch, float degrees) {
+        if (epoch != xrEpoch) return;
+        alignmentDegrees = QuestPreferences.stereoAlignment(degrees);
+        final float saved = alignmentDegrees;
+        ui.post(() -> { if (epoch == xrEpoch) getSharedPreferences("app",0).edit().putFloat("stereo_alignment."+item,saved).apply(); });
+    }
     public void onXrStereoChanged(long epoch, boolean swap, boolean mono) {
         if (epoch != xrEpoch) return;
         swapped=swap;comfortMono=mono;
