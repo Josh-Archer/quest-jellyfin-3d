@@ -28,6 +28,15 @@ def pixel_hashes(path):
                 yield line.rsplit(b",", 1)[1].strip()
 
 
+def validate_decode_evidence(count, demux_log, decoder_log):
+    matched = re.search(r"Matched MVC access-unit pairs: (\d+)", demux_log)
+    strict = re.search(r"Strict stereo frames: (\d+)", decoder_log)
+    if not count or not matched or int(matched.group(1)) != count:
+        raise RuntimeError("Decoder frame count did not match the paired MVC access units")
+    if not strict or int(strict.group(1)) != count:
+        raise RuntimeError("Both decoded eye views were not verified for every frame; use the guarded decoder")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
@@ -66,7 +75,7 @@ def main():
         if args.seconds: demux_args += ["--seconds", str(args.seconds)]
         demux = launch(demux_args, "demux", stdout=subprocess.PIPE)
         env = dict(os.environ, EDGE264MVC_THREADS=str(args.threads))
-        decoder = launch([str(args.decoder.resolve()), "-", "-O"], "decoder", stdin=demux.stdout, stdout=subprocess.PIPE, env=env)
+        decoder = launch([str(args.decoder.resolve()), "-", "-OQ"], "decoder", stdin=demux.stdout, stdout=subprocess.PIPE, env=env)
         demux.stdout.close()
         hasher = launch(["ffmpeg", "-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-f", "framemd5", "-n", str(source_hash)], "source-hashes", stdin=subprocess.PIPE)
         command = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning", "-i", "pipe:0", "-i", str(args.input),
@@ -95,10 +104,8 @@ def main():
             if source is None or source != encoded: raise RuntimeError("Encoded pixels or frame count changed")
             digest.update(source); count += 1
         if not count: raise RuntimeError("MVC decoder returned no stereo frames")
-        demux_log = (args.work_dir / "demux.log").read_text()
-        matched = re.search(r"Matched MVC access-unit pairs: (\d+)", demux_log)
-        if not matched or int(matched.group(1)) != count:
-            raise RuntimeError("Decoder frame count did not match the paired MVC access units")
+        validate_decode_evidence(count, (args.work_dir / "demux.log").read_text(),
+                                 (args.work_dir / "decoder.log").read_text())
         result = probe(partial)
         out_video = next(s for s in result["streams"] if s["codec_type"] == "video")
         if out_video["width"] != video[0]["width"] * 2 or out_video["height"] != video[0]["height"]:
