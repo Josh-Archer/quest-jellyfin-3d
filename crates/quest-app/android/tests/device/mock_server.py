@@ -48,8 +48,8 @@ class Handler(BaseHTTPRequestHandler):
             data = open(video,'rb').read()
             requested = self.headers.get('Range')
             if requested:
-                start, end = map(int, requested.removeprefix('bytes=').split('-'))
-                end = min(end, len(data)-1)
+                start, end = requested.removeprefix('bytes=').split('-')
+                start = int(start); end = min(int(end) if end else len(data)-1, len(data)-1)
                 self.send_response(206); self.send_header('Content-Type','video/mp4')
                 self.send_header('Content-Range',f'bytes {start}-{end}/{len(data)}')
                 self.send_header('Content-Length',str(end-start+1)); self.end_headers()
