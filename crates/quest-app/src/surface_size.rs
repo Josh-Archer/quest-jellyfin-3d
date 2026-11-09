@@ -83,6 +83,7 @@ pub fn parse_projection(value: &str) -> Result<Projection, &'static str> {
         "" | "Flat" => Ok(Projection::Flat),
         "Equirectangular180" => Ok(Projection::Equirectangular180),
         "Equirectangular360" => Ok(Projection::Equirectangular360),
+        "Fisheye" => Ok(Projection::Fisheye),
         _ => Err("This video projection is not supported yet"),
     }
 }
@@ -174,9 +175,8 @@ mod tests {
             parse_projection("Equirectangular360"),
             Ok(Projection::Equirectangular360)
         );
-        for unsupported in ["Fisheye", "Unknown"] {
-            assert!(parse_projection(unsupported).is_err());
-        }
+        assert_eq!(parse_projection("Fisheye"), Ok(Projection::Fisheye));
+        assert!(parse_projection("Unknown").is_err());
     }
 
     #[test]

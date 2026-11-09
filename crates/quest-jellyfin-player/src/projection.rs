@@ -1,12 +1,16 @@
-//! Equirectangular projection without copying or downsampling the decoded eye regions.
+//! Spherical composition layers without copying or downsampling the decoded eye regions.
+//!
+//! OpenXR exposes equirectangular layers only. Fisheye uses the same
+//! `CompositionLayerEquirect2KHR` path with hemispherical coverage as a FOV
+//! approximation; it is not a polar lens remap (see docs/player-design.md).
 use crate::{build_stereo_eye_layer_specs, EyeOrder, Projection, Result, StereoFormat};
 use openxr::{CompositionLayerEquirect2KHR, Posef, Space, Swapchain, Vulkan};
 
 pub fn horizontal_angle(projection: Projection) -> Option<f32> {
     match projection {
-        Projection::Equirectangular180 => Some(std::f32::consts::PI),
+        Projection::Equirectangular180 | Projection::Fisheye => Some(std::f32::consts::PI),
         Projection::Equirectangular360 => Some(std::f32::consts::TAU),
-        _ => None,
+        Projection::Flat => None,
     }
 }
 
@@ -98,9 +102,8 @@ pub fn build_equirect_layers_aligned<'a>(
     comfort_mono: bool,
     alignment: StereoAlignment,
 ) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
-    let angle = horizontal_angle(projection).ok_or_else(|| {
-        crate::PlayerError::Playback("Expected equirectangular projection".into())
-    })?;
+    let angle = horizontal_angle(projection)
+        .ok_or_else(|| crate::PlayerError::Playback("Expected a spherical projection".into()))?;
     let specs = equirect_eye_specs(format, order, width, height, comfort_mono)?;
     Ok(specs
         .into_iter()
@@ -150,7 +153,7 @@ pub fn equirect_eye_specs(
 }
 
 /// Manual choices override detection; unspecified spherical coverage is inferred only when
-/// explicit VR/equirectangular metadata exists. The UI always offers 180/360 correction.
+/// explicit VR/equirectangular metadata exists. Fisheye is never inferred from aspect alone.
 pub fn resolve_projection(
     choice: &str,
     detected: Projection,
@@ -161,10 +164,12 @@ pub fn resolve_projection(
         "Flat" => return Projection::Flat,
         "Equirectangular180" => return Projection::Equirectangular180,
         "Equirectangular360" => return Projection::Equirectangular360,
+        "Fisheye" => return Projection::Fisheye,
         _ => {}
     }
     for tag in tags {
         match tag.to_ascii_lowercase().as_str() {
+            "fisheye" => return Projection::Fisheye,
             "vr180" => return Projection::Equirectangular180,
             "vr360" => return Projection::Equirectangular360,
             _ => {}
@@ -239,7 +244,11 @@ mod tests {
             horizontal_angle(Projection::Equirectangular360),
             Some(std::f32::consts::TAU)
         );
-        assert_eq!(horizontal_angle(Projection::Fisheye), None);
+        assert_eq!(
+            horizontal_angle(Projection::Fisheye),
+            Some(std::f32::consts::PI)
+        );
+        assert_eq!(horizontal_angle(Projection::Flat), None);
         let tags = vec!["Equirectangular".into()];
         assert_eq!(
             resolve_projection("Auto", Projection::Flat, &tags, 1.0),
@@ -260,6 +269,23 @@ mod tests {
         assert_eq!(
             resolve_projection("Equirectangular360", Projection::Flat, &tags, 1.0),
             Projection::Equirectangular360
+        );
+        assert_eq!(
+            resolve_projection("Fisheye", Projection::Flat, &[], 2.0),
+            Projection::Fisheye
+        );
+        assert_eq!(
+            resolve_projection("Auto", Projection::Fisheye, &[], 2.0),
+            Projection::Fisheye
+        );
+        assert_eq!(
+            resolve_projection("Auto", Projection::Flat, &["Fisheye".into()], 2.0),
+            Projection::Fisheye
+        );
+        // Aspect alone must not invent fisheye for ordinary flat movies.
+        assert_eq!(
+            resolve_projection("Auto", Projection::Flat, &[], 1.0),
+            Projection::Flat
         );
     }
     #[test]

@@ -425,16 +425,16 @@ public class MainActivity extends Activity {
         page(data.optString("title", "Playback"), true); backAction = () -> details(item); LinearLayout content = scrollBody();
         String format = data.optString("format", "Mono"), projection = data.optString("projection", "Flat");
         ready(data.optString("method") + "  ·  " + format + "  ·  " + data.optInt("width") + " × " + data.optInt("height"));
-        boolean supported = !projection.equals("Fisheye") && !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width") > 0 && data.optInt("height") > 0;
+        boolean supported = !format.equals("Mvc") && !format.equals("MvHevc") && !format.equals("Unspecified3d") && data.optInt("width") > 0 && data.optInt("height") > 0;
         content.addView(heading("Viewing mode"));
         RadioGroup views = new RadioGroup(this); views.setOrientation(LinearLayout.HORIZONTAL);
-        String[] viewNames={"Cinema screen","VR180°","VR360°"}, viewValues={"Flat","Equirectangular180","Equirectangular360"};
+        String[] viewNames={"Cinema screen","VR180°","VR360°","Fisheye"}, viewValues={"Flat","Equirectangular180","Equirectangular360","Fisheye"};
         for(int i=0;i<viewNames.length;i++) {
             final String mode=viewValues[i]; RadioButton option=new RadioButton(this); option.setText(viewNames[i]); option.setTextColor(Color.WHITE); option.setTextSize(18); option.setMinHeight(dp(48)); option.setChecked(projection.equals(mode));
             option.setOnClickListener(v -> { with(data,"projection",mode); prefs.edit().putString("projection."+item,mode).apply(); }); views.addView(option);
         }
         content.addView(views);
-        content.addView(label("Choose the projection that matches the source. In VR, View opens tilt, 180°/360° and recenter controls.",17));
+        content.addView(label("Choose the projection that matches the source. Fisheye is for filename/tag-classified fisheye items. In VR, View opens tilt, 180°/360° and recenter controls.",17));
         content.addView(heading("Where would you like to watch?"));
         if (supported) addButton(content, "Watch in immersive cinema", () -> launchCinema(item, data));
         addButton(content, "Watch in Quest panel", () -> { try { playback(item, data); } catch (Exception e) { error("Could not start playback."); } });

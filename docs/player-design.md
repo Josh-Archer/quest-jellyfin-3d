@@ -47,3 +47,19 @@ to the original zero correction. Eye crops, source resolution, panorama coverage
 and headset IPD are unchanged. The single-eye 2D view bypasses this correction.
 This is a manual viewing adjustment for recorded disparity, not a repair of the
 recording's stereo depth. Confirm packing, projection and eye order first.
+
+## Fisheye projection
+
+OpenXR provides equirectangular composition layers (`XR_KHR_composition_layer_equirect2`),
+not a fisheye/polar lens layer. There is no app-side video remesh on the MediaCodec
+surface path, so fisheye cannot be sampled with a true circular lens map today.
+
+Cinema therefore submits filename- or tag-classified `Fisheye` items through the same
+`CompositionLayerEquirect2KHR` path used for VR180, with hemispherical
+(`central_horizontal_angle = π`, full vertical ±π/2) coverage. That is a FOV and
+placement approximation only: it does not convert dual-fisheye circles into
+longitude/latitude. Raw circular fisheye frames will look wrong until a mesh or
+shader remap exists. Prefer remapped equirectangular sources (`Equirectangular180` /
+`Equirectangular360`) when available. Fisheye is never inferred from resolution or
+aspect alone; ordinary flat movies stay flat unless the basename or Jellyfin tags
+say otherwise.

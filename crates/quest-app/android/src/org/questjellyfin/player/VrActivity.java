@@ -99,7 +99,7 @@ public class VrActivity extends Activity {
         xrEpoch = epoch; videoLayerCount = 0; videoLayerSubmitted = false; sphericalLayerSubmitted = false; controlsSubmitted = false;
         prepared = false; readyToPlay = false;
         presentation = new VideoPresentation(); buffering = false; statusLabel = "Preparing…";
-        screenStatus = isSpherical() ? (data.optString("projection").equals("Equirectangular180") ? "VR180°" : "VR360°") : String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
+        screenStatus = isSpherical() ? (data.optString("projection").equals("Equirectangular180") ? "VR180°" : data.optString("projection").equals("Fisheye") ? "Fisheye" : "VR360°") : String.format(java.util.Locale.ROOT, "%.1f m · %s", getIntent().getFloatExtra("screen_width", 4f), initialCurve() > 0 ? "curved" : "flat");
         updateTransport(current);
         ui.postDelayed(() -> {
             if (resumed && generation == current && playbackGate.canPlay() && !videoLayerSubmitted) fail("Cinema could not present video on the headset. Try reopening Cinema or use the Quest panel.");
@@ -144,10 +144,11 @@ public class VrActivity extends Activity {
     public boolean hasSubmittedControls() { return controlsSubmitted; }
     public void onXrProjectionChanged(long epoch, int coverage, float tilt) {
         if (epoch != xrEpoch) return;
-        screenStatus = String.format(java.util.Locale.ROOT, "VR%d° · tilt %.0f°", coverage, tilt);
+        String label = coverage == 0 ? "Fisheye" : String.format(java.util.Locale.ROOT, "VR%d°", coverage);
+        screenStatus = String.format(java.util.Locale.ROOT, "%s · tilt %.0f°", label, tilt);
         ui.post(() -> {
             if (epoch != xrEpoch) return;
-            String projection = coverage == 180 ? "Equirectangular180" : "Equirectangular360";
+            String projection = coverage == 180 ? "Equirectangular180" : coverage == 360 ? "Equirectangular360" : "Fisheye";
             getSharedPreferences("app", 0).edit().putString("projection."+item, projection).apply();
         });
     }
