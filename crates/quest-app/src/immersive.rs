@@ -6,7 +6,9 @@ use jni::{
 };
 use quest_jellyfin_player::{
     build_stereo_cylinder_layers_at_pose, build_stereo_quad_layers_at_pose,
-    screen_controls::{artwork_height, panel_transform, Button, ScreenControls},
+    screen_controls::{
+        artwork_height, panel_transform, subtitle_transform, Button, ScreenControls,
+    },
     EyeOrder, Projection, StereoFormat, VirtualScreenConfig,
 };
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -321,6 +323,9 @@ fn run_xr(
     let mut atlas_visual = (-1, -1, false, -1);
     let mut pressed_visual = (-1, std::time::Instant::now() - Duration::from_secs(1));
     let mut ui_swapchain = None;
+    let mut subtitle_swapchain = None;
+    let mut subtitle_cue = String::new();
+    let mut subtitle_ready = false;
     let mut atlas_refresh = std::time::Instant::now() - Duration::from_secs(1);
     let mut frame_clock = std::time::Instant::now();
     let mut had_video_frame = false;
@@ -361,6 +366,9 @@ fn run_xr(
                 diagnostic("XR swapchains created");
                 ui_swapchain = xr
                     .create_ui_swapchain(1536, 784)
+                    .map_err(|e| e.to_string())?;
+                subtitle_swapchain = xr
+                    .create_ui_swapchain(1024, 256)
                     .map_err(|e| e.to_string())?;
                 let pixels = env
                     .call_method(activity, "environmentPixels", "()[B", &[])
@@ -518,6 +526,7 @@ fn run_xr(
                     Button::Back => Some(1),
                     Button::Forward => Some(2),
                     Button::Audio => Some(3),
+                    Button::Subtitles => Some(5),
                     Button::SwapEyes | Button::ComfortMono => {
                         if command == Button::SwapEyes {
                             swap_eyes = !swap_eyes;
@@ -726,6 +735,50 @@ fn run_xr(
                 atlas_visual = visual;
                 atlas_refresh = std::time::Instant::now();
             }
+            let cue = {
+                let value = JString::from(
+                    env.call_method(activity, "currentSubtitleCue", "()Ljava/lang/String;", &[])
+                        .map_err(|_| "Cannot read subtitle cue")?
+                        .l()
+                        .map_err(|_| "Invalid subtitle cue")?,
+                );
+                let text: String = env
+                    .get_string(&value)
+                    .map_err(|_| "Invalid subtitle cue text")?
+                    .into();
+                env.delete_local_ref(value)
+                    .map_err(|_| "Cannot release subtitle cue")?;
+                text
+            };
+            if cue != subtitle_cue {
+                subtitle_cue = cue;
+                if subtitle_cue.is_empty() {
+                    subtitle_ready = false;
+                } else {
+                    let pixels = env
+                        .call_method(activity, "subtitlePixels", "()[B", &[])
+                        .map_err(|_| "Cannot draw subtitle cue")?
+                        .l()
+                        .map_err(|_| "Invalid subtitle pixels")?;
+                    let bytes = JByteArray::from(pixels);
+                    let rgba = env
+                        .convert_byte_array(&bytes)
+                        .map_err(|_| "Invalid subtitle pixel bytes")?;
+                    env.delete_local_ref(bytes)
+                        .map_err(|_| "Cannot release subtitle pixels")?;
+                    if rgba.len() != 1024 * 256 * 4 {
+                        return Err("Invalid subtitle atlas dimensions".into());
+                    }
+                    crate::cinema_atlas::upload_sized(
+                        subtitle_swapchain.as_ref().ok_or("No subtitle swapchain")?,
+                        &vulkan,
+                        &rgba,
+                        1024,
+                        256,
+                    )?;
+                    subtitle_ready = true;
+                }
+            }
             if VIDEO_STATE.load(Ordering::Acquire) == 1 {
                 had_video_frame = true;
             }
@@ -840,6 +893,26 @@ fn run_xr(
                 .collect();
             let panel = panel_transform(&transform, controls.tools_open);
             let mut control_cylinders = Vec::new();
+            let mut subtitle_cylinders = Vec::new();
+            // Cues stay attached to the cinema/workspace even while transport chrome fades.
+            if subtitle_ready && !subtitle_cue.is_empty() && present_video {
+                let cue_panel = subtitle_transform(&transform);
+                let rect = (0, 0, 1024, 256);
+                let texture = subtitle_swapchain.as_ref().ok_or("No subtitle texture")?;
+                if cue_panel.display_mode == xr_core::DisplayMode::FlatQuad {
+                    overlays.push(crate::cinema_atlas::quad(
+                        space,
+                        texture,
+                        rect,
+                        cue_panel.pose(),
+                        cue_panel.size_m(),
+                    ));
+                } else {
+                    subtitle_cylinders.push(crate::cinema_atlas::cylinder(
+                        space, texture, rect, &cue_panel,
+                    ));
+                }
+            }
             if controls.opacity > 0.001 || !had_video_frame {
                 let rect = (0, 0, 1536, artwork_height(controls.tools_open) * 2);
                 let control_texture = ui_swapchain.as_ref().ok_or("No control texture")?;
@@ -958,6 +1031,7 @@ fn run_xr(
             if let Some(ref cover) = waiting_cover {
                 refs.push(&**cover);
             }
+            refs.extend(subtitle_cylinders.iter().map(|layer| &**layer));
             refs.extend(control_cylinders.iter().map(|layer| &**layer));
             refs.extend(overlays.iter().map(|layer| &**layer));
             xr.end_frame(frame.predicted_display_time, &refs)

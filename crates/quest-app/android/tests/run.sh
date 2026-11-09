@@ -3,8 +3,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
-javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/AudioTrackSelector.java" "$HERE/../src/org/questjellyfin/player/SurfacePreparation.java" "$HERE/AudioTrackSelectorTest.java" "$HERE/SurfacePreparationTest.java" "$HERE/../src/org/questjellyfin/player/QuestPreferences.java" "$HERE/QuestPreferencesTest.java"
+javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/AudioTrackSelector.java" "$HERE/../src/org/questjellyfin/player/SubtitleTrackSelector.java" "$HERE/../src/org/questjellyfin/player/SrtSubtitles.java" "$HERE/../src/org/questjellyfin/player/SurfacePreparation.java" "$HERE/AudioTrackSelectorTest.java" "$HERE/SubtitleTrackSelectorTest.java" "$HERE/SrtSubtitlesTest.java" "$HERE/SurfacePreparationTest.java" "$HERE/../src/org/questjellyfin/player/QuestPreferences.java" "$HERE/QuestPreferencesTest.java"
 java -cp "$OUT" AudioTrackSelectorTest
+java -cp "$OUT" SubtitleTrackSelectorTest
+java -cp "$OUT" SrtSubtitlesTest
+javac -cp "$OUT" -d "$OUT" "$HERE/SubtitlePlaybackIntegrationTest.java"
+java -cp "$OUT" SubtitlePlaybackIntegrationTest
 java -cp "$OUT" org.questjellyfin.player.SurfacePreparationTest
 
 java -cp "$OUT" org.questjellyfin.player.QuestPreferencesTest

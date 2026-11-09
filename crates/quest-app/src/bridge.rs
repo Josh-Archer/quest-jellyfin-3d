@@ -436,8 +436,26 @@ pub async fn run(v: Value) -> Result<Value, String> {
                 .user_data
                 .as_ref()
                 .map_or(0, |d| d.playback_position_ticks.max(0));
+            let subtitles: Vec<serde_json::Value> = source
+                .media_streams
+                .iter()
+                .filter(|stream| {
+                    stream.stream_type == Some(jellyfin_client::MediaStreamType::Subtitle)
+                })
+                .map(|stream| {
+                    json!({
+                        "index": stream.index,
+                        "language": stream.language,
+                        "codec": stream.codec,
+                        "title": stream.display_title.clone().or_else(|| stream.title.clone()),
+                        "external": stream.is_external.unwrap_or(false),
+                        "is_default": stream.is_default.unwrap_or(false),
+                        "is_forced": stream.is_forced.unwrap_or(false),
+                    })
+                })
+                .collect();
             Ok(
-                json!({"user_id":client.session().map(|s| s.user_id),"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",projection),"width":width,"height":height}),
+                json!({"user_id":client.session().map(|s| s.user_id),"title":item.name,"url":url.as_str(),"authorization":authorization,"method":format!("{:?}",resolved.method),"reason":reason,"source":source.id,"session":info.play_session_id,"resume":resume,"format":format!("{:?}",format.format),"eye_order":format!("{:?}",format.eye_order),"projection":format!("{:?}",projection),"width":width,"height":height,"subtitles":subtitles}),
             )
         }
         "start" | "progress" | "stop" => {

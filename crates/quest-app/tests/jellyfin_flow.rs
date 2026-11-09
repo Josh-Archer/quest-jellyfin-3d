@@ -331,3 +331,81 @@ async fn mvc_uses_packed_alternate_even_when_original_is_direct_playable() {
     assert_eq!(run(base).await.unwrap()["format"], "Mvc");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn prepare_hands_cinema_every_subtitle_stream_without_leaking_the_token() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-subs-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "server".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Users/user/Items/movie"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id": "movie",
+            "Name": "Dialogue",
+            "Path": "/movies/Dialogue.mkv"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Items/movie/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "PlaySessionId": "session",
+            "MediaSources": [{
+                "Id": "source",
+                "Path": "/movies/Dialogue.mkv",
+                "SupportsDirectPlay": true,
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "hevc", "Width": 1920, "Height": 1080, "Index": 0},
+                    {"Type": "Subtitle", "Index": 2, "Codec": "subrip", "Language": "eng", "DisplayTitle": "English", "IsDefault": true},
+                    {"Type": "Subtitle", "Index": 3, "Codec": "pgssub", "Language": "eng", "DisplayTitle": "English PGS", "IsExternal": false},
+                    {"Type": "Subtitle", "Index": 4, "Codec": "ass", "Language": "spa", "Title": "Spanish", "IsExternal": true, "IsForced": true}
+                ]
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let prepared = run(json!({
+        "action": "prepare",
+        "server": server.uri(),
+        "device": "quest",
+        "store": file.to_str().unwrap(),
+        "item": "movie"
+    }))
+    .await
+    .unwrap();
+    let url = prepared["url"].as_str().unwrap();
+    assert!(!url.contains("token"));
+    assert!(prepared["authorization"]
+        .as_str()
+        .unwrap()
+        .contains("token"));
+    let subs = prepared["subtitles"].as_array().unwrap();
+    assert_eq!(subs.len(), 3);
+    assert_eq!(subs[0]["index"], 2);
+    assert_eq!(subs[0]["codec"], "subrip");
+    assert_eq!(subs[0]["language"], "eng");
+    assert_eq!(subs[0]["is_default"], true);
+    assert_eq!(subs[1]["codec"], "pgssub");
+    assert_eq!(subs[2]["codec"], "ass");
+    assert_eq!(subs[2]["is_forced"], true);
+    assert_eq!(subs[2]["external"], true);
+    assert_eq!(subs[2]["title"], "Spanish");
+    std::fs::remove_dir_all(dir).unwrap();
+}

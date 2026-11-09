@@ -56,11 +56,18 @@ public class VrActivity extends Activity {
     private volatile float progressFraction;
     private volatile String screenStatus = "Flat screen";
     private volatile String audioLabel = "Audio";
+    private volatile String subtitleLabel = "Subs";
+    private volatile String subtitleCue = "";
     private volatile boolean controlsSubmitted;
     private volatile boolean swapped;
     private volatile boolean comfortMono;
     private volatile float alignmentDegrees;
     private volatile boolean buffering;
+    private int selectedSubtitle = -1;
+    private int[] subtitleTracks = new int[0];
+    private java.util.List<SrtSubtitles.Cue> externalCues = java.util.Collections.emptyList();
+    private boolean externalSubtitleActive;
+    private final ExecutorService subtitleFetch = Executors.newSingleThreadExecutor();
     private VideoPresentation presentation = new VideoPresentation();
     private final android.content.BroadcastReceiver screenOff = new android.content.BroadcastReceiver() {
         @Override public void onReceive(android.content.Context context, Intent intent) {
@@ -121,11 +128,14 @@ public class VrActivity extends Activity {
         return controlsPixelsWithState(hovered,-1,tools,opacity);
     }
     public byte[] controlsPixelsWithState(int hovered, int pressed, boolean tools, float opacity) {
-        return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, screenStatus,
+        return PlayerArtwork.pixels(videoTitle, statusLabel, transportTime, audioLabel, subtitleLabel, screenStatus,
             "Pause".equals(playLabel), isSpherical(), buffering || statusLabel.startsWith("Preparing"), progressFraction,
             hovered,pressed,tools,opacity,comfortMono || data.optString("format","Mono").equals("Mono"),swapped,alignmentDegrees,hasStereoAlignment());
     }
     public byte[] environmentPixels() { return PlayerArtwork.environmentPixels(); }
+    /** Empty when Off or between cues so the native layer can omit the overlay. */
+    public String currentSubtitleCue() { return subtitleCue == null ? "" : subtitleCue; }
+    public byte[] subtitlePixels() { return PlayerArtwork.subtitlePixels(subtitleCue); }
     public float initialAlignment() { return alignmentDegrees; }
     public boolean hasStereoAlignment() { return isSpherical() && (data.optString("format").endsWith("SideBySide") || data.optString("format").endsWith("OverUnder")); }
     public void onXrAlignmentChanged(long epoch, float degrees) {
@@ -207,6 +217,11 @@ public class VrActivity extends Activity {
             progressFraction = duration > 0 ? Math.max(0f, Math.min(1f, (float)position / duration)) : 0f;
             transportTime = clock(position) + " / " + clock(duration);
             statusLabel = !readyToPlay || presentation.state() == 0 ? "Preparing…" : buffering ? "Buffering…" : playing ? "Playing" : "Paused";
+            if (externalSubtitleActive) {
+                String next = SrtSubtitles.at(externalCues, position);
+                if (next == null) next = "";
+                if (!next.equals(subtitleCue)) subtitleCue = next;
+            }
             nativePlaybackStatus(xrEpoch, playing && !buffering);
         } catch (IllegalStateException ignored) {}
         ui.postDelayed(() -> updateTransport(current), 250);
@@ -238,6 +253,11 @@ public class VrActivity extends Activity {
                     mediaSource = new HttpMediaDataSource(data.getString("url"), data.getString("authorization"));
                     player.setDataSource(mediaSource);
                 } else player.setDataSource(this, Uri.parse(data.getString("url")), headers);
+                player.setOnTimedTextListener((mp, text) -> {
+                    if (!resumed || player != mp || externalSubtitleActive) return;
+                    CharSequence value = text != null ? text.getText() : null;
+                    subtitleCue = value == null ? "" : value.toString().trim();
+                });
                 player.setOnInfoListener((mp, what, extra) -> {
                     if (!resumed || player != mp) return false;
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START && resumed && player == mp && !started) {
@@ -264,6 +284,7 @@ public class VrActivity extends Activity {
                     prepared = true;
                     int width = mp.getVideoWidth(), height = mp.getVideoHeight();
                     android.util.Log.i("Jellyfin3D", "Prepared video " + width + "x" + height);
+                    refreshSubtitleTracks(mp);
                     if (SurfacePreparation.needsResize(data.optInt("width"), data.optInt("height"), width, height)) {
                         // Rebind while the decoder is prepared but before it starts producing buffers.
                         awaitingResizedSurface = true;
@@ -346,6 +367,8 @@ public class VrActivity extends Activity {
                     int choice = AudioTrackSelector.next(indices, selected);
                     if (choice >= 0) { player.selectTrack(choice); audioLabel = "Audio " + tracks[choice].getLanguage(); }
                     else audioLabel = "No audio";
+                } else if (command == 5) {
+                    cycleSubtitleTrack();
                 } else if (command == 1 || command == 2) {
                     int position = player.getCurrentPosition();
                     long target = Math.max(0L, (long)position + (command == 1 ? -10000L : 10000L));
@@ -356,6 +379,181 @@ public class VrActivity extends Activity {
             } catch (IllegalStateException e) { Toast.makeText(this, "Playback control unavailable", Toast.LENGTH_SHORT).show(); }
         });
     }
+    private void refreshSubtitleTracks(MediaPlayer mp) {
+        try {
+            MediaPlayer.TrackInfo[] tracks = mp.getTrackInfo();
+            java.util.ArrayList<Integer> ids = new java.util.ArrayList<>();
+            for (int i = 0; i < tracks.length; i++) {
+                int type = tracks[i].getTrackType();
+                if (type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE
+                    || type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT) ids.add(i);
+            }
+            subtitleTracks = new int[ids.size()];
+            for (int i = 0; i < ids.size(); i++) subtitleTracks[i] = ids.get(i);
+            int selected = -1;
+            try { selected = mp.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT); } catch (RuntimeException ignored) {}
+            if (selected < 0) {
+                try { selected = mp.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE); } catch (RuntimeException ignored) {}
+            }
+            boolean known = false;
+            for (int id : subtitleTracks) if (id == selected) { known = true; break; }
+            selectedSubtitle = known ? selected : -1;
+            if (selectedSubtitle < 0) {
+                try { if (selected >= 0) mp.deselectTrack(selected); } catch (RuntimeException ignored) {}
+                subtitleCue = "";
+            }
+            updateSubtitleLabel(mp);
+            maybeLoadExternalSubtitles();
+        } catch (RuntimeException e) {
+            subtitleTracks = new int[0];
+            selectedSubtitle = -1;
+            subtitleLabel = "No subs";
+        }
+    }
+    private void updateSubtitleLabel(MediaPlayer mp) {
+        String language = null;
+        if (selectedSubtitle >= 0 && mp != null) {
+            try {
+                MediaPlayer.TrackInfo[] tracks = mp.getTrackInfo();
+                if (selectedSubtitle < tracks.length) language = tracks[selectedSubtitle].getLanguage();
+            } catch (RuntimeException ignored) {}
+        }
+        subtitleLabel = SubtitleTrackSelector.label(subtitleTracks, selectedSubtitle, language);
+    }
+    private void cycleSubtitleTrack() {
+        if (player == null) return;
+        if (subtitleTracks.length > 0) {
+            applySubtitleSelection(SubtitleTrackSelector.next(subtitleTracks, selectedSubtitle));
+            return;
+        }
+        // No embedded tracks: toggle Jellyfin text delivery when PlaybackInfo listed one.
+        if (externalSubtitleActive) {
+            externalSubtitleActive = false;
+            externalCues = java.util.Collections.emptyList();
+            subtitleCue = "";
+            subtitleLabel = firstExternalSubtitle() == null ? "No subs" : "Subs off";
+        } else if (firstExternalSubtitle() != null) {
+            loadExternalSubtitle(firstExternalSubtitle(), true);
+        } else {
+            subtitleLabel = "No subs";
+        }
+    }
+    private void applySubtitleSelection(int choice) {
+        if (player == null) return;
+        try {
+            if (selectedSubtitle >= 0) {
+                try { player.deselectTrack(selectedSubtitle); } catch (RuntimeException ignored) {}
+            }
+            externalSubtitleActive = false;
+            externalCues = java.util.Collections.emptyList();
+            subtitleCue = "";
+            selectedSubtitle = choice;
+            if (choice >= 0) player.selectTrack(choice);
+            updateSubtitleLabel(player);
+        } catch (RuntimeException e) {
+            Toast.makeText(this, "Subtitle track unavailable", Toast.LENGTH_SHORT).show();
+            selectedSubtitle = -1;
+            subtitleLabel = SubtitleTrackSelector.label(subtitleTracks, -1, null);
+        }
+    }
+    private org.json.JSONObject firstExternalSubtitle() {
+        if (data == null) return null;
+        org.json.JSONArray streams = data.optJSONArray("subtitles");
+        if (streams == null || streams.length() == 0) return null;
+        String[] codecs = new String[streams.length()];
+        boolean[] takeNow = new boolean[streams.length()];
+        org.json.JSONObject[] objects = new org.json.JSONObject[streams.length()];
+        for (int i = 0; i < streams.length(); i++) {
+            org.json.JSONObject stream = streams.optJSONObject(i);
+            objects[i] = stream;
+            if (stream == null) continue;
+            codecs[i] = stream.optString("codec");
+            takeNow[i] = stream.optBoolean("is_default", false)
+                || stream.optBoolean("is_forced", false)
+                || stream.optBoolean("external", false);
+        }
+        int pick = SubtitleTrackSelector.preferredText(codecs, takeNow);
+        return pick < 0 ? null : objects[pick];
+    }
+    private void maybeLoadExternalSubtitles() {
+        if (selectedSubtitle >= 0 || subtitleTracks.length > 0 || data == null) {
+            if (subtitleTracks.length == 0 && firstExternalSubtitle() == null) subtitleLabel = "No subs";
+            return;
+        }
+        org.json.JSONObject pick = firstExternalSubtitle();
+        if (pick == null) { subtitleLabel = "No subs"; return; }
+        // Match Jellyfin default/forced selection; otherwise leave Off until Subs is pressed.
+        if (pick.optBoolean("is_default", false) || pick.optBoolean("is_forced", false)) {
+            loadExternalSubtitle(pick, false);
+        } else {
+            subtitleLabel = "Subs off";
+        }
+    }
+    private void loadExternalSubtitle(org.json.JSONObject pick, boolean userRequested) {
+        final int index = pick.optInt("index", -1);
+        final String language = pick.optString("language", "");
+        final String codec = pick.optString("codec", "subrip");
+        final String authorization;
+        try { authorization = data.getString("authorization"); } catch (Exception e) { return; }
+        final String sourceId = data.optString("source", "");
+        if (userRequested) subtitleLabel = "Subs…";
+        subtitleFetch.execute(() -> {
+            try {
+                String body = fetchSubtitleStream(index, sourceId, codec, authorization);
+                java.util.List<SrtSubtitles.Cue> cues = SrtSubtitles.parse(body);
+                ui.post(() -> {
+                    if (!resumed || selectedSubtitle >= 0) return;
+                    externalCues = cues;
+                    externalSubtitleActive = !cues.isEmpty();
+                    subtitleLabel = externalSubtitleActive
+                        ? SubtitleTrackSelector.label(new int[]{0}, 0, language)
+                        : (userRequested ? "No subs" : SubtitleTrackSelector.label(new int[]{0}, -1, language));
+                    if (!externalSubtitleActive) subtitleCue = "";
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    if (!resumed) return;
+                    externalSubtitleActive = false;
+                    externalCues = java.util.Collections.emptyList();
+                    subtitleCue = "";
+                    subtitleLabel = "No subs";
+                });
+            }
+        });
+    }
+    private String fetchSubtitleStream(int index, String sourceId, String codec, String authorization) throws Exception {
+        if (index < 0 || server == null || item == null) throw new IllegalArgumentException("subtitle");
+        String extension = "srt";
+        String lower = codec == null ? "" : codec.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("vtt") || lower.equals("webvtt")) extension = "vtt";
+        else if (lower.equals("ass") || lower.equals("ssa")) extension = "ass";
+        String base = server.endsWith("/") ? server.substring(0, server.length() - 1) : server;
+        String path = base + "/Videos/" + Uri.encode(item) + "/" + Uri.encode(sourceId)
+            + "/Subtitles/" + index + "/Stream." + extension;
+        java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL(path).openConnection();
+        try {
+            connection.setConnectTimeout(8000);
+            connection.setReadTimeout(15000);
+            connection.setRequestProperty("Authorization", authorization);
+            connection.setInstanceFollowRedirects(false);
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) throw new java.io.IOException("subtitle http " + code);
+            try (java.io.InputStream in = connection.getInputStream();
+                 java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int read;
+                int total = 0;
+                while ((read = in.read(buffer)) >= 0) {
+                    total += read;
+                    if (total > 2_000_000) throw new java.io.IOException("subtitle too large");
+                    out.write(buffer, 0, read);
+                }
+                return out.toString("UTF-8");
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
     // Called on the XR thread before its surface is destroyed.
     public void onXrClosing() {
         java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
@@ -364,6 +562,8 @@ public class VrActivity extends Activity {
     }
     private void releasePlayer() {
         awaitingResizedSurface = false; prepared = false; readyToPlay = false;
+        externalSubtitleActive = false; externalCues = java.util.Collections.emptyList();
+        subtitleCue = ""; selectedSubtitle = -1; subtitleTracks = new int[0];
         if (mediaSource != null) { mediaSource.close(); mediaSource = null; }
         if (player != null) {
             if (started && !completed) { try { lastTicks = (long)player.getCurrentPosition() * 10000; } catch (IllegalStateException ignored) {} }
@@ -407,6 +607,6 @@ public class VrActivity extends Activity {
     @Override protected void onDestroy() {
         unregisterReceiver(screenOff);
         if (!isChangingConfigurations()) deliverOutcome();
-        xrThread.shutdown(); reports.shutdown(); super.onDestroy();
+        xrThread.shutdown(); reports.shutdown(); subtitleFetch.shutdown(); super.onDestroy();
     }
 }
