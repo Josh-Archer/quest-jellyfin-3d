@@ -59,6 +59,23 @@ class DemuxTest(unittest.TestCase):
         self.assertEqual(demux(io.BytesIO(fixture()), out, 0x1011, 0x1012, .04), 1)
         self.assertEqual(out.getvalue(), b'L\0R\0')
 
+    def test_bounded_sample_evidence_must_match_the_demuxed_pair_count(self):
+        out = io.BytesIO()
+        count = demux(io.BytesIO(fixture()), out, 0x1011, 0x1012, .04)
+        self.assertEqual(count, 1)
+        self.assertTrue(out.getvalue().startswith(b'L') and out.getvalue().endswith(b'R\0'))
+        validate_decode_evidence(
+            count,
+            f"Matched MVC access-unit pairs: {count}",
+            f"Strict stereo frames: {count}",
+        )
+        with self.assertRaises(RuntimeError):
+            validate_decode_evidence(
+                count,
+                f"Matched MVC access-unit pairs: {count}",
+                "Strict stereo frames: 288",
+            )
+
     def test_missing_eye_is_rejected(self):
         data = fixture()[:-192]
         with self.assertRaisesRegex(ValueError, 'Unpaired'):
