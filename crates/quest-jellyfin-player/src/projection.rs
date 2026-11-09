@@ -102,9 +102,8 @@ pub fn build_equirect_layers_aligned<'a>(
     comfort_mono: bool,
     alignment: StereoAlignment,
 ) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
-    let angle = horizontal_angle(projection).ok_or_else(|| {
-        crate::PlayerError::Playback("Expected a spherical projection".into())
-    })?;
+    let angle = horizontal_angle(projection)
+        .ok_or_else(|| crate::PlayerError::Playback("Expected a spherical projection".into()))?;
     let specs = equirect_eye_specs(format, order, width, height, comfort_mono)?;
     Ok(specs
         .into_iter()
@@ -280,12 +279,7 @@ mod tests {
             Projection::Fisheye
         );
         assert_eq!(
-            resolve_projection(
-                "Auto",
-                Projection::Flat,
-                &["Fisheye".into()],
-                2.0
-            ),
+            resolve_projection("Auto", Projection::Flat, &["Fisheye".into()], 2.0),
             Projection::Fisheye
         );
         // Aspect alone must not invent fisheye for ordinary flat movies.
