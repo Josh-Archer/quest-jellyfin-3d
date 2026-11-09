@@ -6,7 +6,9 @@ use jni::{
 };
 use quest_jellyfin_player::{
     build_stereo_cylinder_layers_at_pose, build_stereo_quad_layers_at_pose,
-    screen_controls::{artwork_height, panel_transform, subtitle_transform, Button, ScreenControls},
+    screen_controls::{
+        artwork_height, panel_transform, subtitle_transform, Button, ScreenControls,
+    },
     EyeOrder, Projection, StereoFormat, VirtualScreenConfig,
 };
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -768,9 +770,7 @@ fn run_xr(
                         return Err("Invalid subtitle atlas dimensions".into());
                     }
                     crate::cinema_atlas::upload_sized(
-                        subtitle_swapchain
-                            .as_ref()
-                            .ok_or("No subtitle swapchain")?,
+                        subtitle_swapchain.as_ref().ok_or("No subtitle swapchain")?,
                         &vulkan,
                         &rgba,
                         1024,
@@ -898,9 +898,7 @@ fn run_xr(
             if subtitle_ready && !subtitle_cue.is_empty() && present_video {
                 let cue_panel = subtitle_transform(&transform);
                 let rect = (0, 0, 1024, 256);
-                let texture = subtitle_swapchain
-                    .as_ref()
-                    .ok_or("No subtitle texture")?;
+                let texture = subtitle_swapchain.as_ref().ok_or("No subtitle texture")?;
                 if cue_panel.display_mode == xr_core::DisplayMode::FlatQuad {
                     overlays.push(crate::cinema_atlas::quad(
                         space,
@@ -911,10 +909,7 @@ fn run_xr(
                     ));
                 } else {
                     subtitle_cylinders.push(crate::cinema_atlas::cylinder(
-                        space,
-                        texture,
-                        rect,
-                        &cue_panel,
+                        space, texture, rect, &cue_panel,
                     ));
                 }
             }

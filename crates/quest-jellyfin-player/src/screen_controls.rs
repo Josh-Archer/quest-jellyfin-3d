@@ -165,8 +165,7 @@ pub fn subtitle_transform(screen: &ScreenTransform) -> ScreenTransform {
     let sub_height = (sub_width * 0.16).min(height * 0.14).max(0.08);
     let transport_top_v = 0.94 - transport_height / height;
     let gap_v = (0.02 / height).min(transport_top_v * 0.25);
-    let centre_v =
-        (transport_top_v - gap_v - sub_height / (2.0 * height)).clamp(0.2, 0.92);
+    let centre_v = (transport_top_v - gap_v - sub_height / (2.0 * height)).clamp(0.2, 0.92);
     let at = screen.surface_pose(0.5, centre_v);
     let mut panel = screen.clone();
     panel.position = at.position + at.orientation.rotate_vec(Vec3::new(0.0, 0.0, 0.004));
