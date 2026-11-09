@@ -459,16 +459,21 @@ public class VrActivity extends Activity {
     private org.json.JSONObject firstExternalSubtitle() {
         if (data == null) return null;
         org.json.JSONArray streams = data.optJSONArray("subtitles");
-        if (streams == null) return null;
-        org.json.JSONObject fallback = null;
+        if (streams == null || streams.length() == 0) return null;
+        String[] codecs = new String[streams.length()];
+        boolean[] takeNow = new boolean[streams.length()];
+        org.json.JSONObject[] objects = new org.json.JSONObject[streams.length()];
         for (int i = 0; i < streams.length(); i++) {
             org.json.JSONObject stream = streams.optJSONObject(i);
-            if (stream == null || !SrtSubtitles.isTextCodec(stream.optString("codec"))) continue;
-            if (fallback == null) fallback = stream;
-            if (stream.optBoolean("is_default", false) || stream.optBoolean("is_forced", false)
-                || stream.optBoolean("external", false)) return stream;
+            objects[i] = stream;
+            if (stream == null) continue;
+            codecs[i] = stream.optString("codec");
+            takeNow[i] = stream.optBoolean("is_default", false)
+                || stream.optBoolean("is_forced", false)
+                || stream.optBoolean("external", false);
         }
-        return fallback;
+        int pick = SubtitleTrackSelector.preferredText(codecs, takeNow);
+        return pick < 0 ? null : objects[pick];
     }
     private void maybeLoadExternalSubtitles() {
         if (selectedSubtitle >= 0 || subtitleTracks.length > 0 || data == null) {

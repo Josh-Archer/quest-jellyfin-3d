@@ -14,6 +14,24 @@ public final class SubtitleTrackSelector {
         return tracks[0];
     }
 
+    /**
+     * Index of the text subtitle stream immersive playback should offer.
+     * Bitmap codecs are skipped. The first default, forced, or external text stream wins;
+     * otherwise the first text stream. {@code -1} when there is no text stream.
+     * {@code takeNow[i]} is true for default, forced, or external.
+     */
+    public static int preferredText(String[] codecs, boolean[] takeNow) {
+        int fallback = -1;
+        int count = codecs == null ? 0 : codecs.length;
+        for (int i = 0; i < count; i++) {
+            if (!SrtSubtitles.isTextCodec(codecs[i])) continue;
+            boolean take = takeNow != null && i < takeNow.length && takeNow[i];
+            if (fallback < 0) fallback = i;
+            if (take) return i;
+        }
+        return fallback;
+    }
+
     /** Label for the transport button. */
     public static String label(int[] tracks, int selected, String language) {
         if (tracks == null || tracks.length == 0) return "No subs";

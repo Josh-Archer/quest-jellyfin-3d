@@ -7,6 +7,8 @@ javac -d "$OUT" "$HERE/../src/org/questjellyfin/player/AudioTrackSelector.java" 
 java -cp "$OUT" AudioTrackSelectorTest
 java -cp "$OUT" SubtitleTrackSelectorTest
 java -cp "$OUT" SrtSubtitlesTest
+javac -cp "$OUT" -d "$OUT" "$HERE/SubtitlePlaybackIntegrationTest.java"
+java -cp "$OUT" SubtitlePlaybackIntegrationTest
 java -cp "$OUT" org.questjellyfin.player.SurfacePreparationTest
 
 java -cp "$OUT" org.questjellyfin.player.QuestPreferencesTest
