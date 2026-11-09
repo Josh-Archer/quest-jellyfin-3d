@@ -161,7 +161,7 @@ pub fn subtitle_transform(screen: &ScreenTransform) -> ScreenTransform {
     let transport_width = (width * 0.9).min(2.8);
     let transport_height =
         (transport_width * MAIN_HEIGHT as f32 / ARTWORK_WIDTH as f32).min(height * 0.84);
-    let sub_width = (width * 0.72).min(2.4).max(0.8);
+    let sub_width = (width * 0.72).clamp(0.8, 2.4);
     let sub_height = (sub_width * 0.16).min(height * 0.14).max(0.08);
     let transport_top_v = 0.94 - transport_height / height;
     let gap_v = (0.02 / height).min(transport_top_v * 0.25);
