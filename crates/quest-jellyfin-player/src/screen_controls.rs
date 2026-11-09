@@ -14,6 +14,7 @@ pub enum Button {
     Back,
     Forward,
     Audio,
+    Subtitles,
     Exit,
     Smaller,
     Larger,
@@ -93,10 +94,11 @@ pub fn button_at((u, v): (f32, f32), tools: bool) -> Option<Button> {
     if (120.0..184.0).contains(&y) {
         return [
             (24.0, 88.0, Button::PlayPause),
-            (108.0, 168.0, Button::Back),
-            (180.0, 240.0, Button::Forward),
-            (440.0, 552.0, Button::Audio),
-            (568.0, 680.0, Button::Screen),
+            (100.0, 160.0, Button::Back),
+            (168.0, 228.0, Button::Forward),
+            (364.0, 460.0, Button::Audio),
+            (472.0, 568.0, Button::Subtitles),
+            (580.0, 676.0, Button::Screen),
             (696.0, 756.0, Button::Hide),
         ]
         .into_iter()
@@ -127,6 +129,7 @@ impl Button {
             Self::AlignMinus => 15,
             Self::AlignPlus => 16,
             Self::ResetAlignment => 17,
+            Self::Subtitles => 18,
         }
     }
 }
@@ -147,6 +150,31 @@ pub fn panel_transform(screen: &ScreenTransform, tools: bool) -> ScreenTransform
         panel.curve_radius = screen.curve_radius - 0.004;
         panel.curve_angle = screen.curve_angle * (panel_width / width);
         panel.aspect_ratio = panel.curve_radius * panel.curve_angle / panel_height;
+    }
+    panel
+}
+
+/// Readable cue strip just above the main transport, tracking screen distance/curve.
+/// Placement ignores the tools drawer so cues do not jump when Screen opens.
+pub fn subtitle_transform(screen: &ScreenTransform) -> ScreenTransform {
+    let (width, height) = screen.size_m();
+    let transport_width = (width * 0.9).min(2.8);
+    let transport_height =
+        (transport_width * MAIN_HEIGHT as f32 / ARTWORK_WIDTH as f32).min(height * 0.84);
+    let sub_width = (width * 0.72).min(2.4).max(0.8);
+    let sub_height = (sub_width * 0.16).min(height * 0.14).max(0.08);
+    let transport_top_v = 0.94 - transport_height / height;
+    let gap_v = (0.02 / height).min(transport_top_v * 0.25);
+    let centre_v =
+        (transport_top_v - gap_v - sub_height / (2.0 * height)).clamp(0.2, 0.92);
+    let at = screen.surface_pose(0.5, centre_v);
+    let mut panel = screen.clone();
+    panel.position = at.position + at.orientation.rotate_vec(Vec3::new(0.0, 0.0, 0.004));
+    panel.quad_size = (sub_width, sub_height);
+    if screen.display_mode == DisplayMode::CurvedCylinder {
+        panel.curve_radius = screen.curve_radius - 0.004;
+        panel.curve_angle = screen.curve_angle * (sub_width / width);
+        panel.aspect_ratio = panel.curve_radius * panel.curve_angle / sub_height;
     }
     panel
 }
@@ -481,10 +509,11 @@ mod tests {
             let h = artwork_height(tools) as f32;
             for (x, button) in [
                 (56.0, Button::PlayPause),
-                (138.0, Button::Back),
-                (210.0, Button::Forward),
-                (496.0, Button::Audio),
-                (624.0, Button::Screen),
+                (130.0, Button::Back),
+                (198.0, Button::Forward),
+                (412.0, Button::Audio),
+                (520.0, Button::Subtitles),
+                (628.0, Button::Screen),
                 (726.0, Button::Hide),
             ] {
                 assert_eq!(
@@ -507,6 +536,7 @@ mod tests {
                 (f32::NAN, 0.4),
                 (1.0, 0.4),
                 (0.5, f32::INFINITY),
+                (466.0 / 768.0, (152.0 + if tools { 192.0 } else { 0.0 }) / h),
             ] {
                 assert_eq!(button_at(uv, tools), None);
             }
@@ -525,6 +555,37 @@ mod tests {
                 button_at(((91.2 + column as f32 * 146.4) / 768.0, 72.0 / 392.0), true),
                 Some(button)
             );
+        }
+    }
+    #[test]
+    fn subtitle_strip_stays_above_transport_and_tracks_the_movie() {
+        for curved in [false, true] {
+            let mut movie = screen();
+            if curved {
+                bend(&mut movie, 1.2);
+            }
+            let transport = panel_transform(&movie, false);
+            let tools = panel_transform(&movie, true);
+            let cue = subtitle_transform(&movie);
+            let local = movie
+                .orientation
+                .conjugate()
+                .rotate_vec(cue.position - movie.position);
+            let transport_local = movie
+                .orientation
+                .conjugate()
+                .rotate_vec(transport.position - movie.position);
+            assert!(local.y > transport_local.y);
+            assert!((local.z - 0.004).abs() < 1e-5);
+            assert!(cue.size_m().0 <= movie.size_m().0 + 1e-5);
+            // Tools expansion must not move the cue.
+            let with_tools_open = subtitle_transform(&movie);
+            assert!((with_tools_open.position - cue.position).length() < 1e-5);
+            assert!(tools.size_m().1 >= transport.size_m().1);
+            let delta = Vec3::new(-0.2, 0.1, 0.3);
+            let mut moved = movie.clone();
+            moved.position += delta;
+            assert!((subtitle_transform(&moved).position - cue.position - delta).length() < 1e-5);
         }
     }
     #[test]
@@ -741,7 +802,7 @@ mod tests {
         let mut c = ScreenControls::default();
         let mut movie = screen();
         let target = panel_transform(&movie, false)
-            .surface_pose(624.0 / 768.0, 152.0 / 200.0)
+            .surface_pose(628.0 / 768.0, 152.0 / 200.0)
             .position;
         let mut pointer = input(target, false);
         let turned = ScreenPose::new(head().position, Quat::from_euler(0.1, 0.9, 0.0));

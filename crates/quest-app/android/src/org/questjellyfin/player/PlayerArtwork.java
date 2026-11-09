@@ -6,12 +6,19 @@ import android.text.TextUtils;
 
 /** High-resolution movie-attached Horizon-style transport. Layout matches screen_controls.rs. */
 final class PlayerArtwork {
+    static final int SUBTITLE_WIDTH = 1024, SUBTITLE_HEIGHT = 256;
     static byte[] pixels(String title, String status, String time, String audio, String screen,
                          boolean playing, boolean spherical, boolean loading, float progressValue,
                          int hovered, int pressed, boolean tools, float opacity, boolean mono, boolean swapped) {
-        return pixels(title,status,time,audio,screen,playing,spherical,loading,progressValue,hovered,pressed,tools,opacity,mono,swapped,0f,false);
+        return pixels(title,status,time,audio,"Subs",screen,playing,spherical,loading,progressValue,hovered,pressed,tools,opacity,mono,swapped,0f,false);
     }
     static byte[] pixels(String title, String status, String time, String audio, String screen,
+                         boolean playing, boolean spherical, boolean loading, float progressValue,
+                         int hovered, int pressed, boolean tools, float opacity, boolean mono, boolean swapped,
+                         float alignment, boolean alignmentAvailable) {
+        return pixels(title,status,time,audio,"Subs",screen,playing,spherical,loading,progressValue,hovered,pressed,tools,opacity,mono,swapped,alignment,alignmentAvailable);
+    }
+    static byte[] pixels(String title, String status, String time, String audio, String subs, String screen,
                          boolean playing, boolean spherical, boolean loading, float progressValue,
                          int hovered, int pressed, boolean tools, float opacity, boolean mono, boolean swapped,
                          float alignment, boolean alignmentAvailable) {
@@ -34,13 +41,15 @@ final class PlayerArtwork {
         p.setColor(HorizonStyle.TEXT); c.drawCircle(24+720*value,87,hovered==12 ? 9 : 6,p);
         button(c,p,hovered,pressed,0,24,120,64,64,true,false);
         icon(c,p,playing ? "pause" : "play",56,152,HorizonStyle.ON_PRIMARY);
-        button(c,p,hovered,pressed,1,108,122,60,60,false,false); seek(c,p,138,152,false);
-        button(c,p,hovered,pressed,2,180,122,60,60,false,false); seek(c,p,210,152,true);
-        text(c,p,time,260,158,18,HorizonStyle.TEXT,false,166);
-        button(c,p,hovered,pressed,3,440,122,112,60,false,false);
-        centered(c,p,audio,496,158,18,HorizonStyle.TEXT,92);
-        button(c,p,hovered,pressed,5,568,122,112,60,false,tools);
-        centered(c,p,spherical ? "View" : "Screen",624,158,18,HorizonStyle.TEXT,92);
+        button(c,p,hovered,pressed,1,100,122,60,60,false,false); seek(c,p,130,152,false);
+        button(c,p,hovered,pressed,2,168,122,60,60,false,false); seek(c,p,198,152,true);
+        text(c,p,time,236,158,18,HorizonStyle.TEXT,false,118);
+        button(c,p,hovered,pressed,3,364,122,96,60,false,false);
+        centered(c,p,audio,412,158,18,HorizonStyle.TEXT,84);
+        button(c,p,hovered,pressed,18,472,122,96,60,false,false);
+        centered(c,p,subs,520,158,18,HorizonStyle.TEXT,84);
+        button(c,p,hovered,pressed,5,580,122,96,60,false,tools);
+        centered(c,p,spherical ? "View" : "Screen",628,158,18,HorizonStyle.TEXT,84);
         button(c,p,hovered,pressed,6,696,122,60,60,false,false);
         icon(c,p,"down",726,152,HorizonStyle.TEXT);
         if (loading) {
@@ -75,6 +84,44 @@ final class PlayerArtwork {
             p.setColor(0x44707882); c.drawRect(24,191,744,192,p);
         }
         return rgba(bitmap,opacity);
+    }
+    /** Screen-attached cue with a translucent scrim. Empty text yields a fully transparent atlas. */
+    static byte[] subtitlePixels(String cue) {
+        Bitmap bitmap = Bitmap.createBitmap(SUBTITLE_WIDTH, SUBTITLE_HEIGHT, Bitmap.Config.ARGB_8888);
+        if (cue == null || cue.trim().isEmpty()) return rgba(bitmap, 1f);
+        Canvas c = new Canvas(bitmap);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        String[] lines = cue.trim().replace('\r', '\n').split("\n");
+        if (lines.length > 3) {
+            lines = new String[]{lines[0], lines[1], lines[2]};
+        }
+        float size = lines.length > 2 ? 36f : 44f;
+        TextPaint tp = new TextPaint(p);
+        tp.setTypeface(HorizonStyle.medium);
+        tp.setTextSize(size);
+        tp.setColor(Color.WHITE);
+        tp.setTextAlign(Paint.Align.CENTER);
+        float lineHeight = size * 1.25f;
+        float block = lines.length * lineHeight;
+        float top = (SUBTITLE_HEIGHT - block) * 0.5f;
+        float maxWidth = 0f;
+        String[] drawn = new String[lines.length];
+        for (int i = 0; i < lines.length; i++) {
+            drawn[i] = TextUtils.ellipsize(lines[i], tp, SUBTITLE_WIDTH - 80f, TextUtils.TruncateAt.END).toString();
+            maxWidth = Math.max(maxWidth, tp.measureText(drawn[i]));
+        }
+        float scrimWidth = Math.min(SUBTITLE_WIDTH - 24f, maxWidth + 48f);
+        float scrimLeft = (SUBTITLE_WIDTH - scrimWidth) * 0.5f;
+        float scrimTop = Math.max(8f, top - 16f);
+        float scrimBottom = Math.min(SUBTITLE_HEIGHT - 8f, top + block + 16f);
+        p.setColor(0xB0101118);
+        c.drawRoundRect(scrimLeft, scrimTop, scrimLeft + scrimWidth, scrimBottom, 18, 18, p);
+        float y = top + size;
+        for (String line : drawn) {
+            c.drawText(line, SUBTITLE_WIDTH * 0.5f, y, tp);
+            y += lineHeight;
+        }
+        return rgba(bitmap, 1f);
     }
     static byte[] environmentPixels() {
         Bitmap bitmap=Bitmap.createBitmap(512,256,Bitmap.Config.ARGB_8888);

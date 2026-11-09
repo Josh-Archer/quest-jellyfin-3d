@@ -614,7 +614,7 @@ public class MainActivity extends Activity {
         if (signedIn) addButton(content,"Switch user",this::users);
         if (signedIn) addButton(content, "Sign out", () -> { loading("Signing out…"); request("signout", null, d -> { signedIn = false; userName = ""; userId = ""; resetAccountView(); users(); }); });
         addButton(content, "Clear cached artwork", () -> { posterCache.evictAll(); ready("Artwork cache cleared."); });
-        content.addView(heading("About")); content.addView(label("Jellyfin 3D for Quest · 0.1.0\nIndependent native Jellyfin client using DeskQuest XR components.\nStereo cinema supports mono, SBS and over-under. MVC, MV-HEVC and immersive subtitles are still unavailable.", 16));
+        content.addView(heading("About")); content.addView(label("Jellyfin 3D for Quest · 0.1.0\nIndependent native Jellyfin client using DeskQuest XR components.\nStereo cinema supports mono, SBS and over-under with text subtitles. MVC and MV-HEVC are still unavailable.", 16));
         addButton(content, "Back", signedIn ? this::dashboard : this::home);
     }
     @Override public void onBackPressed() { if (backAction != null) backAction.run(); else super.onBackPressed(); }
