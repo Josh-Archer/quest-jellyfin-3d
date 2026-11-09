@@ -616,17 +616,19 @@ fn run_xr(
                 }
             }
             if spherical && (projection != previous_projection || view_tilt != previous_tilt) {
+                let coverage = match projection {
+                    Projection::Equirectangular180 => 180,
+                    Projection::Equirectangular360 => 360,
+                    Projection::Fisheye => 0,
+                    Projection::Flat => 0,
+                };
                 env.call_method(
                     activity,
                     "onXrProjectionChanged",
                     "(JIF)V",
                     &[
                         JValue::Long(epoch as jlong),
-                        JValue::Int(if projection == Projection::Equirectangular180 {
-                            180
-                        } else {
-                            360
-                        }),
+                        JValue::Int(coverage),
                         JValue::Float(view_tilt.to_degrees()),
                     ],
                 )
