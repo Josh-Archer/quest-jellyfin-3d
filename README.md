@@ -38,11 +38,14 @@ In VR, click or pinch to reveal transport controls. **View** provides tilt,
 Headset/focus loss pauses playback and requires an explicit Play to resume.
 Flat movies retain their movable, resizable and curved cinema screens.
 
-Blu-ray MVC requires a prepared packed-stereo alternate; ordinary server
-transcoding cannot reconstruct the dependent eye. The [preparation tool](tools/README.md)
-decodes both views and verifies every losslessly encoded stereo frame. The app
-selects a packed alternate over the original MVC stream. Preparation retains the
-original file. Native MVC and MV-HEVC decoding remain unsupported.
+Blu-ray MVC and MV-HEVC require a prepared packed-stereo alternate; ordinary server
+transcoding cannot reconstruct the dependent eye, and Quest MediaCodec / `xr-video`
+only decode a single HEVC view. The [preparation tool](tools/README.md) decodes both
+MVC views and verifies every losslessly encoded stereo frame. The app selects a
+packed SBS/OU alternate over the original multiview stream when Jellyfin offers one,
+and refuses raw MV-HEVC with an error that names the missing dual-view decode path.
+Preparation retains the original file. Native MVC and MV-HEVC decoding remain
+unsupported.
 
 Jellyfin's 3D filter requires server metadata. For a confirmed full-SBS source,
 a file-specific NFO can set `<fileinfo><streamdetails><video><format3d>FSBS</format3d>`

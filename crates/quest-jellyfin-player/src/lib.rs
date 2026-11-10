@@ -19,8 +19,8 @@ pub mod projection;
 pub use playback_engine::{PlaybackEngine, PlaybackState};
 pub use stereo::{
     aspect_correction_scale, calculate_display_aspect_ratio, calculate_eye_pixel_rect,
-    calculate_eye_uv, calculate_eye_uv_crop, is_packed_stereo, stereo_layout, Eye, EyeRegion,
-    EyeUvCrop, NormalizedUvRect, StereoLayout, StereoPixelRect,
+    calculate_eye_uv, calculate_eye_uv_crop, is_packed_stereo, needs_dual_view_decode,
+    stereo_layout, Eye, EyeRegion, EyeUvCrop, NormalizedUvRect, StereoLayout, StereoPixelRect,
 };
 pub use virtual_screen::{
     build_stereo_cylinder_layers, build_stereo_cylinder_layers_at_pose,
