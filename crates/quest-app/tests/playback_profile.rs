@@ -56,7 +56,8 @@ fn quest_device_profile_advertises_jellyfin_codec_limits() {
 }
 
 #[test]
-fn codec_frame_rate_caps_transcode_above_8k30_and_4k60() {
+fn public_evaluate_enforces_8k30_and_h264_60_caps() {
+    // Exercises jellyfin-client 0.1.2 caps through the app's public evaluate path.
     let profile = quest_device_profile();
     for codec in ["hevc", "av1"] {
         match evaluate_direct_play(&profile, &item(codec, 7680, 4320, 30.1)) {

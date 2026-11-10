@@ -315,17 +315,7 @@ pub async fn run(v: Value) -> Result<Value, String> {
             }
             let mut resolved = jellyfin_client::resolve_playback(client.base_url(), id, &info)
                 .map_err(|e| e.to_string())?;
-            let mut reason = match resolved.method {
-                jellyfin_client::PlayMethod::DirectPlay => {
-                    "Jellyfin confirmed this source supports direct play".to_owned()
-                }
-                jellyfin_client::PlayMethod::DirectStream => {
-                    "Jellyfin selected direct stream for this source".to_owned()
-                }
-                jellyfin_client::PlayMethod::Transcode => {
-                    "Jellyfin selected transcoding because direct play is unavailable".to_owned()
-                }
-            };
+            let mut reason = resolved.reason.clone();
             if !allow_transcoding && resolved.method == jellyfin_client::PlayMethod::Transcode {
                 return Err("This source requires server transcoding. Enable it in Playback settings or choose another source.".into());
             }
