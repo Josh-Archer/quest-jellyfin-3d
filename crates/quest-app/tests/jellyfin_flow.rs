@@ -409,3 +409,111 @@ async fn prepare_hands_cinema_every_subtitle_stream_without_leaking_the_token() 
     assert_eq!(subs[2]["title"], "Spanish");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn prepare_uses_bumped_frame_rate_caps_without_leaking_token() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-caps-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "s".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Users/user/Items/too-fast"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Id":"too-fast","Name":"8K60"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Items/too-fast/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "PlaySessionId": "play-8k",
+            "MediaSources": [{
+                "Id": "source-8k",
+                "SupportsDirectPlay": true,
+                "SupportsTranscoding": true,
+                "TranscodingUrl": "/Videos/too-fast/master.m3u8?api_key=token",
+                "MediaStreams": [{
+                    "Type": "Video",
+                    "Codec": "hevc",
+                    "Width": 7680,
+                    "Height": 4320,
+                    "RealFrameRate": 60.0
+                }]
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Users/user/Items/hd"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"hd","Name":"1080p"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Items/hd/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "PlaySessionId": "play-hd",
+            "MediaSources": [{
+                "Id": "source-hd",
+                "SupportsDirectPlay": true,
+                "MediaStreams": [{
+                    "Type": "Video",
+                    "Codec": "h264",
+                    "Width": 1920,
+                    "Height": 1080,
+                    "RealFrameRate": 24.0
+                }]
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let too_fast = run(json!({
+        "action": "prepare",
+        "server": server.uri(),
+        "device": "quest",
+        "store": file.to_str().unwrap(),
+        "item": "too-fast"
+    }))
+    .await
+    .unwrap();
+    assert_eq!(too_fast["method"], "Transcode");
+    assert!(too_fast["reason"]
+        .as_str()
+        .unwrap()
+        .contains("8K30 hardware cap"));
+    assert!(!too_fast["url"].as_str().unwrap().contains("token"));
+
+    let hd = run(json!({
+        "action": "prepare",
+        "server": server.uri(),
+        "device": "quest",
+        "store": file.to_str().unwrap(),
+        "item": "hd"
+    }))
+    .await
+    .unwrap();
+    assert_eq!(hd["method"], "DirectPlay");
+    assert_eq!(
+        hd["reason"],
+        "Jellyfin confirmed this source supports direct play"
+    );
+    assert!(!hd["url"].as_str().unwrap().contains("token"));
+    assert!(hd["authorization"].as_str().unwrap().contains("token"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
