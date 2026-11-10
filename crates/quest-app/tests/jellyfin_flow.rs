@@ -247,7 +247,7 @@ async fn library_search_passes_the_term_and_page_to_jellyfin() {
 }
 
 #[tokio::test]
-async fn selected_multiview_source_is_not_treated_as_mono_hevc() {
+async fn mvhevc_without_packed_alternate_is_refused_naming_decode_path() {
     use jellyfin_client::{StoredSession, TokenStore};
     use quest_app::AppSessionStore;
     let server = MockServer::start().await;
@@ -270,8 +270,84 @@ async fn selected_multiview_source_is_not_treated_as_mono_hevc() {
         .unwrap();
     Mock::given(method("GET")).and(path("/Users/user/Items/movie")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"movie","Name":"Movie", "MediaStreams":[{"Type":"Video","Codec":"hevc","Width":1920,"Height":1080}]}))).mount(&server).await;
     Mock::given(method("POST")).and(path("/Items/movie/PlaybackInfo")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSources":[{"Id":"source", "SupportsDirectPlay":true,"Path":"/media/Spatial.MV-HEVC.mp4","MediaStreams":[{"Type":"Video","Codec":"mv-hevc","Width":1920,"Height":1080}]}]}))).mount(&server).await;
-    let result = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"})).await.unwrap();
-    assert_eq!(result["format"], "MvHevc");
+    let err = run(json!({"action":"prepare","server":server.uri(),"device":"quest","store":file.to_str().unwrap(),"item":"movie"})).await.unwrap_err();
+    assert!(
+        err.contains("dual-view MV-HEVC decode path") && err.contains("packed SBS/OU"),
+        "refusal must name the missing decode path: {err}"
+    );
+    // Detection must still classify the stream as MvHevc, never ordinary HEVC/SBS.
+    assert_eq!(
+        quest_jellyfin_player::detect_item_format(&jellyfin_client::BaseItem {
+            path: Some("/media/Spatial.MV-HEVC.mp4".into()),
+            media_streams: vec![jellyfin_client::MediaStream {
+                codec: Some("mv-hevc".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .format,
+        quest_jellyfin_player::StereoFormat::MvHevc
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn mvhevc_uses_packed_alternate_when_jellyfin_offers_one() {
+    use jellyfin_client::{StoredSession, TokenStore};
+    use quest_app::AppSessionStore;
+    let server = MockServer::start().await;
+    let dir = std::env::temp_dir().join(format!(
+        "jellyfin-mvhevc-alt-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    AppSessionStore(file.clone())
+        .save(&StoredSession {
+            server_url: server.uri(),
+            access_token: "token".into(),
+            user_id: "user".into(),
+            user_name: "viewer".into(),
+            server_id: "server".into(),
+            device_id: "quest".into(),
+        })
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/Users/user/Items/movie"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id":"movie","Name":"Spatial movie",
+            "Path":"/movies/Movie.MV-HEVC.mov",
+            "MediaStreams":[{"Type":"Video","Codec":"mv-hevc","Width":1920,"Height":1080}]
+        })))
+        .mount(&server)
+        .await;
+    let packed = json!({
+        "Id":"packed","Path":"/movies/Movie - 3D.HSBS.mkv",
+        "SupportsDirectPlay":true,
+        "MediaStreams":[{"Type":"Video","Codec":"hevc","Width":3840,"Height":1080}]
+    });
+    Mock::given(method("POST"))
+        .and(path("/Items/movie/PlaybackInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "MediaSources":[
+                {"Id":"original","Path":"/movies/Movie.MV-HEVC.mov","SupportsDirectPlay":true,
+                 "MediaStreams":[{"Type":"Video","Codec":"mv-hevc","Width":1920,"Height":1080}]},
+                packed
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let prepared = run(json!({
+        "action":"prepare","server":server.uri(),"device":"quest",
+        "store":file.to_str().unwrap(),"item":"movie"
+    }))
+    .await
+    .unwrap();
+    assert_eq!(prepared["source"], "packed");
+    assert_eq!(prepared["method"], "DirectPlay");
+    assert_eq!(prepared["format"], "HalfSideBySide");
+    assert_ne!(prepared["format"], "MvHevc");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

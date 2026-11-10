@@ -48,6 +48,26 @@ and headset IPD are unchanged. The single-eye 2D view bypasses this correction.
 This is a manual viewing adjustment for recorded disparity, not a repair of the
 recording's stereo depth. Confirm packing, projection and eye order first.
 
+## MV-HEVC and other multiview codecs
+
+Quest's regular hardware decoder and the current `xr-video` MediaCodec path expose a
+single HEVC/AV1 surface. They do not decode independent MV-HEVC (or Blu-ray MVC)
+dependent views, so cinema cannot honestly submit both eyes from a raw multiview
+bitstream. Ordinary HEVC capability reporting does not imply multiview decoding.
+
+Preparation therefore:
+
+1. Detects `MvHevc` / `Mvc` from Jellyfin `Video3DFormat`, codec/profile labels, or
+   filename tokens.
+2. Prefers a packed SBS/OU alternate already indexed on the same Jellyfin item when
+   one exists, and plays that alternate through the existing packed-stereo crop path.
+3. Keeps raw MV-HEVC out of the cinema compositor. When no packed alternate is
+   offered, `prepare` fails with an error that names the missing dual-view MV-HEVC
+   decode path rather than relabeling the stream as mono HEVC or SBS.
+
+Server-side packed alternates (and future dual-view decode work) remain the path to
+spatial video; this client does not pretend MediaCodec already provides one.
+
 ## Fisheye projection
 
 OpenXR provides equirectangular composition layers (`XR_KHR_composition_layer_equirect2`),

@@ -119,6 +119,15 @@ pub const fn is_packed_stereo(format: StereoFormat) -> bool {
     )
 }
 
+/// Multiview codecs that need both eye views decoded (or a packed SBS/OU alternate).
+///
+/// Quest MediaCodec and the current `xr-video` crate expose a single HEVC/AV1
+/// surface. They cannot submit independent MV-HEVC or MVC dependent views, so
+/// cinema must refuse the raw stream unless Jellyfin offers a packed alternate.
+pub const fn needs_dual_view_decode(format: StereoFormat) -> bool {
+    matches!(format, StereoFormat::Mvc | StereoFormat::MvHevc)
+}
+
 /// Maps a [`StereoFormat`] onto `xr-video`'s frame-partitioning [`StereoLayout`].
 ///
 /// Unpacked formats (`Mono`, `Mvc`, `MvHevc`, `Unspecified3d`) fall back to `StereoLayout::Mono`.
@@ -268,6 +277,23 @@ pub fn calculate_display_aspect_ratio(format: StereoFormat, width: u32, height: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiview_formats_need_dual_view_or_packed_alternate() {
+        assert!(needs_dual_view_decode(StereoFormat::Mvc));
+        assert!(needs_dual_view_decode(StereoFormat::MvHevc));
+        for packed in [
+            StereoFormat::HalfSideBySide,
+            StereoFormat::FullSideBySide,
+            StereoFormat::HalfOverUnder,
+            StereoFormat::FullOverUnder,
+        ] {
+            assert!(is_packed_stereo(packed));
+            assert!(!needs_dual_view_decode(packed));
+        }
+        assert!(!needs_dual_view_decode(StereoFormat::Mono));
+        assert!(!needs_dual_view_decode(StereoFormat::Unspecified3d));
+    }
 
     #[test]
     fn test_uv_half_and_full_sbs() {

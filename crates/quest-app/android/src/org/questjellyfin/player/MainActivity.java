@@ -440,7 +440,7 @@ public class MainActivity extends Activity {
         addButton(content, "Watch in Quest panel", () -> { try { playback(item, data); } catch (Exception e) { error("Could not start playback."); } });
         content.addView(label("Cinema: trigger pauses / resumes · thumbstick left / right seeks 10 seconds · grip changes audio · thumbstick up recenters the screen.", 18));
         if (!data.optString("method").equals("DirectPlay")) content.addView(label("Jellyfin selected server conversion. Resolution, bitrate or HDR may change.", 17));
-        if (!supported) content.addView(label(format.equals("Mvc") ? "MVC needs a prepared full-SBS version on the server. Both eye views must be decoded; ordinary server transcoding only preserves the base view." : "This source's projection or stereo packing is not yet supported in immersive cinema.", 18));
+        if (!supported) content.addView(label(format.equals("Mvc") ? "MVC needs a prepared full-SBS version on the server. Both eye views must be decoded; ordinary server transcoding only preserves the base view." : format.equals("MvHevc") ? "MV-HEVC needs a packed SBS/OU alternate on the server. Quest MediaCodec and xr-video decode a single HEVC view; there is no dual-view MV-HEVC decode path." : "This source's projection or stereo packing is not yet supported in immersive cinema.", 18));
         addButton(content, "Playback settings", this::settings); addButton(content, "Back to title", () -> details(item));
         String preferred = prefs.getString("player", "ask");
         if (preferred.equals("cinema") && supported) launchCinema(item, data);

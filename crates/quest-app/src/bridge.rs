@@ -282,25 +282,29 @@ pub async fn run(v: Value) -> Result<Value, String> {
             if let Some(err) = info.error_code {
                 return Err(format!("Jellyfin rejected playback: {err}"));
             }
-            // An MVC item may have a verified full-SBS alternate version prepared on the NAS.
-            // Select the packed source before resolution; never relabel the MVC base view as SBS.
-            let has_mvc_source = quest_jellyfin_player::detect_item_format(&item).format
-                == quest_jellyfin_player::StereoFormat::Mvc
+            // MVC / MV-HEVC need both eye views. Quest MediaCodec + xr-video only
+            // decode one HEVC surface, so prefer a packed SBS/OU alternate Jellyfin
+            // already indexed. Never relabel the multiview base view as packed stereo.
+            let item_format = quest_jellyfin_player::detect_item_format(&item).format;
+            let has_multiview_source = quest_jellyfin_player::needs_dual_view_decode(item_format)
                 || info.media_sources.iter().any(|source| {
-                    quest_jellyfin_player::detect_item_format(&jellyfin_client::BaseItem {
-                        path: source.path.clone(),
-                        ..Default::default()
-                    })
-                    .format
-                        == quest_jellyfin_player::StereoFormat::Mvc
+                    quest_jellyfin_player::needs_dual_view_decode(
+                        quest_jellyfin_player::detect_item_format(&jellyfin_client::BaseItem {
+                            path: source.path.clone(),
+                            media_streams: source.media_streams.clone(),
+                            ..Default::default()
+                        })
+                        .format,
+                    )
                 });
-            if has_mvc_source {
+            if has_multiview_source {
                 let packed_sources: Vec<_> = info
                     .media_sources
                     .iter()
                     .filter(|source| {
                         let candidate = jellyfin_client::BaseItem {
                             path: source.path.clone(),
+                            media_streams: source.media_streams.clone(),
                             ..Default::default()
                         };
                         quest_jellyfin_player::is_packed_stereo(
@@ -335,13 +339,21 @@ pub async fn run(v: Value) -> Result<Value, String> {
                     path: Some(path.clone()),
                     ..Default::default()
                 };
-                if has_mvc_source
+                if has_multiview_source
                     && quest_jellyfin_player::is_packed_stereo(
                         quest_jellyfin_player::detect_item_format(&candidate).format,
                     )
                 {
                     source_item.video_3d_format = None;
                 }
+            }
+            let selected_format = quest_jellyfin_player::detect_item_format(&source_item).format;
+            // Raw MV-HEVC has no dual-view decode path on this headset; refuse before cinema.
+            if selected_format == quest_jellyfin_player::StereoFormat::MvHevc {
+                return Err(
+                    "MV-HEVC needs a packed SBS/OU alternate on the server. Quest MediaCodec and xr-video decode a single HEVC view; there is no dual-view MV-HEVC decode path."
+                        .into(),
+                );
             }
             let decision = evaluate_for_decoder(&profile, &source_item, hardware_hevc_8k60);
             if let jellyfin_client::DirectPlayDecision::TranscodeRequired { reason: cap_reason } =
