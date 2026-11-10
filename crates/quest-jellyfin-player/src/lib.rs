@@ -31,4 +31,9 @@ pub use virtual_screen::{
 
 pub mod cinema;
 pub mod environment;
+pub mod fisheye;
 pub mod screen_controls;
+pub use fisheye::{
+    spherical_submission, EquidistantFisheye, FisheyeMeshVertex, FisheyeRemapMesh,
+    SphericalSubmission,
+};

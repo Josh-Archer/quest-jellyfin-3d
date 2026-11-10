@@ -51,15 +51,20 @@ recording's stereo depth. Confirm packing, projection and eye order first.
 ## Fisheye projection
 
 OpenXR provides equirectangular composition layers (`XR_KHR_composition_layer_equirect2`),
-not a fisheye/polar lens layer. There is no app-side video remesh on the MediaCodec
-surface path, so fisheye cannot be sampled with a true circular lens map today.
+not a fisheye/polar lens layer. Filename- or tag-classified `Fisheye` items therefore
+take a dedicated compositor path (`SphericalSubmission::FisheyeEquidistantRemap`) that
+is distinct from flat quads and from plain VR180 equirectangular sampling.
 
-Cinema therefore submits filename- or tag-classified `Fisheye` items through the same
-`CompositionLayerEquirect2KHR` path used for VR180, with hemispherical
-(`central_horizontal_angle = π`, full vertical ±π/2) coverage. That is a FOV and
-placement approximation only: it does not convert dual-fisheye circles into
-longitude/latitude. Raw circular fisheye frames will look wrong until a mesh or
-shader remap exists. Prefer remapped equirectangular sources (`Equirectangular180` /
-`Equirectangular360`) when available. Fisheye is never inferred from resolution or
-aspect alone; ordinary flat movies stay flat unless the basename or Jellyfin tags
-say otherwise.
+**Lens model:** equidistant (`r = f · θ`). The optical axis is OpenXR forward (−Z).
+The image circle is inscribed in each eye's normalized crop (radius `0.5` in local UV).
+Default FOV is 180° (π rad) across the circle diameter—the usual dual-fisheye / VR180
+camera framing. The path builds a hemispherical UV mesh (`FisheyeRemapMesh`) whose
+per-vertex UVs come from that map (center pixel → forward; circle edge → ±FOV/2).
+
+OpenXR still has no fisheye layer, so the mesh is paired with hemispherical
+`CompositionLayerEquirect2KHR` carriers (`central_horizontal_angle = π`, vertical
+±π/2) for sphere placement. Prefer remapped equirectangular sources
+(`Equirectangular180` / `Equirectangular360`) when available. Fisheye is never
+inferred from resolution or aspect alone; ordinary flat movies stay flat unless the
+basename or Jellyfin tags say otherwise. Headset validation of dual-fisheye circle
+framing remains required.

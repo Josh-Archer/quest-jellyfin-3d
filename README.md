@@ -20,7 +20,7 @@ A connected-Quest smoke suite verifies artwork reaching image views, home and li
 
 The [player design notes](docs/player-design.md) describe the Horizon-style controls, measured hardware decode tier and neutral binocular buffering presentation.
 
-This is an independent native client with familiar Jellyfin browsing flows, not full feature parity with Jellyfin's official clients. Live TV, downloads, casting, playlists, and native MVC/MV-HEVC decoding remain unimplemented. Fisheye cinema uses the equirect layer as a documented FOV approximation (not a polar lens remap). Unsupported multiview formats are not offered in cinema. Ordinary HEVC support does not imply multiview decoding. Keycloak/OIDC code is experimental and not connected to the app.
+This is an independent native client with familiar Jellyfin browsing flows, not full feature parity with Jellyfin's official clients. Live TV, downloads, casting, playlists, and native MVC/MV-HEVC decoding remain unimplemented. Fisheye cinema uses an equidistant UV-mesh remap path (hemispherical Equirect2 carriers; OpenXR has no fisheye layer). Unsupported multiview formats are not offered in cinema. Ordinary HEVC support does not imply multiview decoding. Keycloak/OIDC code is experimental and not connected to the app.
 
 Quick Connect tokens are kept in the application's private, backup-excluded storage and bound to the server URL and device identity. Video requests use an authorization header rather than placing the token in the URL. Prefer HTTPS when connecting outside a trusted network; HTTP is supported for local servers and sends credentials without transport encryption.
 

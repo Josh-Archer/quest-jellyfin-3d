@@ -855,19 +855,41 @@ fn run_xr(
                 let orientation =
                     panorama_orientation * Quat::from_axis_angle(Vec3::UNIT_X, view_tilt);
                 let pose: openxr::Posef = ScreenPose::new(Vec3::ZERO, orientation).into();
-                quest_jellyfin_player::projection::build_equirect_layers_aligned(
-                    space,
-                    swapchain,
-                    format,
-                    order,
-                    size.width,
-                    size.height,
-                    projection,
-                    pose,
-                    comfort_mono,
-                    alignment,
-                )
-                .map_err(|e| e.to_string())?
+                match projection {
+                    Projection::Fisheye => {
+                        // Equidistant UV mesh remap; Equirect2 is only the sphere carrier.
+                        let (_mesh, layers) =
+                            quest_jellyfin_player::projection::build_fisheye_remap_layers(
+                                space,
+                                swapchain,
+                                format,
+                                order,
+                                size.width,
+                                size.height,
+                                pose,
+                                comfort_mono,
+                                alignment,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        layers
+                    }
+                    Projection::Equirectangular180 | Projection::Equirectangular360 => {
+                        quest_jellyfin_player::projection::build_equirect_layers_aligned(
+                            space,
+                            swapchain,
+                            format,
+                            order,
+                            size.width,
+                            size.height,
+                            projection,
+                            pose,
+                            comfort_mono,
+                            alignment,
+                        )
+                        .map_err(|e| e.to_string())?
+                    }
+                    Projection::Flat => Vec::new(),
+                }
             } else {
                 Vec::new()
             };
