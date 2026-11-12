@@ -1,11 +1,22 @@
 //! Spherical composition layers without copying or downsampling the decoded eye regions.
 //!
-//! OpenXR exposes equirectangular layers only. Fisheye uses the same
-//! `CompositionLayerEquirect2KHR` path with hemispherical coverage as a FOV
-//! approximation; it is not a polar lens remap (see docs/player-design.md).
+//! Equirectangular 180/360 use `CompositionLayerEquirect2KHR` with longitude/latitude
+//! sampling. Fisheye takes a separate equidistant UV-mesh remap path
+//! ([`build_fisheye_remap_layers`]); OpenXR still has no fisheye layer, so that path
+//! submits hemispherical Equirect2 carriers while the mesh encodes polar lens UVs
+//! (see `fisheye` and docs/player-design.md).
+use crate::fisheye::{
+    spherical_submission, EquidistantFisheye, FisheyeRemapMesh, SphericalSubmission,
+};
 use crate::{build_stereo_eye_layer_specs, EyeOrder, Projection, Result, StereoFormat};
 use openxr::{CompositionLayerEquirect2KHR, Posef, Space, Swapchain, Vulkan};
 
+pub use crate::fisheye::{spherical_submission as resolve_spherical_submission, FisheyeMeshVertex};
+
+/// Horizontal coverage of the OpenXR sphere carrier, when the projection is spherical.
+///
+/// Fisheye uses a hemispherical carrier (π) for the equidistant remap path; that is
+/// not the same as treating the source as VR180 equirectangular.
 pub fn horizontal_angle(projection: Projection) -> Option<f32> {
     match projection {
         Projection::Equirectangular180 | Projection::Fisheye => Some(std::f32::consts::PI),
@@ -102,6 +113,19 @@ pub fn build_equirect_layers_aligned<'a>(
     comfort_mono: bool,
     alignment: StereoAlignment,
 ) -> Result<Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>> {
+    match spherical_submission(projection) {
+        Some(SphericalSubmission::Equirect180 | SphericalSubmission::Equirect360) => {}
+        Some(SphericalSubmission::FisheyeEquidistantRemap) => {
+            return Err(crate::PlayerError::Playback(
+                "Fisheye requires build_fisheye_remap_layers, not plain equirect".into(),
+            ));
+        }
+        None => {
+            return Err(crate::PlayerError::Playback(
+                "Expected an equirectangular projection".into(),
+            ));
+        }
+    }
     let angle = horizontal_angle(projection)
         .ok_or_else(|| crate::PlayerError::Playback("Expected a spherical projection".into()))?;
     let specs = equirect_eye_specs(format, order, width, height, comfort_mono)?;
@@ -133,6 +157,91 @@ pub fn build_equirect_layers_aligned<'a>(
                 .lower_vertical_angle(-std::f32::consts::FRAC_PI_2)
         })
         .collect())
+}
+
+/// Equidistant fisheye remap: polar UV mesh plus hemispherical Equirect2 carriers.
+///
+/// Distinct from [`build_equirect_layers`]: classified Fisheye never shares the plain
+/// VR180 equirect builder. OpenXR has no fisheye layer, so the mesh carries the lens
+/// UVs while Equirect2 places the sphere.
+#[allow(clippy::too_many_arguments)]
+pub fn build_fisheye_remap_layers<'a>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<Vulkan>,
+    format: StereoFormat,
+    order: EyeOrder,
+    width: u32,
+    height: u32,
+    pose: Posef,
+    comfort_mono: bool,
+    alignment: StereoAlignment,
+) -> Result<(
+    FisheyeRemapMesh,
+    Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>,
+)> {
+    build_fisheye_remap_layers_with_lens(
+        space,
+        swapchain,
+        format,
+        order,
+        width,
+        height,
+        pose,
+        comfort_mono,
+        alignment,
+        EquidistantFisheye::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_fisheye_remap_layers_with_lens<'a>(
+    space: &'a Space,
+    swapchain: &'a Swapchain<Vulkan>,
+    format: StereoFormat,
+    order: EyeOrder,
+    width: u32,
+    height: u32,
+    pose: Posef,
+    comfort_mono: bool,
+    alignment: StereoAlignment,
+    lens: EquidistantFisheye,
+) -> Result<(
+    FisheyeRemapMesh,
+    Vec<CompositionLayerEquirect2KHR<'a, Vulkan>>,
+)> {
+    let mesh = FisheyeRemapMesh::hemisphere(lens, 16, 32);
+    let angle = horizontal_angle(Projection::Fisheye)
+        .ok_or_else(|| crate::PlayerError::Playback("Expected fisheye projection".into()))?;
+    let specs = equirect_eye_specs(format, order, width, height, comfort_mono)?;
+    let layers = specs
+        .into_iter()
+        .map(|spec| {
+            CompositionLayerEquirect2KHR::new()
+                .layer_flags(openxr::CompositionLayerFlags::CORRECT_CHROMATIC_ABERRATION)
+                .space(space)
+                .eye_visibility(spec.eye_visibility)
+                .sub_image(
+                    openxr::SwapchainSubImage::new()
+                        .swapchain(swapchain)
+                        .image_rect(openxr::Rect2Di {
+                            offset: openxr::Offset2Di {
+                                x: spec.sub_image_rect.x as i32,
+                                y: spec.sub_image_rect.y as i32,
+                            },
+                            extent: openxr::Extent2Di {
+                                width: spec.sub_image_rect.width as i32,
+                                height: spec.sub_image_rect.height as i32,
+                            },
+                        }),
+                )
+                .pose(alignment.eye_pose(pose, spec.eye_visibility))
+                .radius(0.0)
+                .central_horizontal_angle(angle)
+                .upper_vertical_angle(std::f32::consts::FRAC_PI_2)
+                .lower_vertical_angle(-std::f32::consts::FRAC_PI_2)
+        })
+        .collect();
+    Ok((mesh, layers))
 }
 
 /// A 2D comfort view keeps a complete source eye and makes that same crop binocular.
@@ -247,6 +356,14 @@ mod tests {
         assert_eq!(
             horizontal_angle(Projection::Fisheye),
             Some(std::f32::consts::PI)
+        );
+        assert_eq!(
+            resolve_spherical_submission(Projection::Fisheye),
+            Some(SphericalSubmission::FisheyeEquidistantRemap)
+        );
+        assert_ne!(
+            resolve_spherical_submission(Projection::Fisheye),
+            resolve_spherical_submission(Projection::Equirectangular180)
         );
         assert_eq!(horizontal_angle(Projection::Flat), None);
         let tags = vec!["Equirectangular".into()];

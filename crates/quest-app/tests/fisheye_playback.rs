@@ -1,6 +1,7 @@
 //! Prepare a classified fisheye item, and keep raw MVC off the compositor.
 use quest_app::bridge::run;
 use quest_app::surface_size::{parse_projection, SurfaceSize};
+use quest_jellyfin_player::fisheye::{spherical_submission, SphericalSubmission};
 use quest_jellyfin_player::{EyeOrder, Projection, StereoFormat};
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -9,6 +10,14 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[test]
 fn fisheye_is_a_real_projection_and_raw_mvc_still_cannot_fill_the_screen() {
     assert_eq!(parse_projection("Fisheye").unwrap(), Projection::Fisheye);
+    assert_eq!(
+        spherical_submission(Projection::Fisheye),
+        Some(SphericalSubmission::FisheyeEquidistantRemap)
+    );
+    assert_ne!(
+        spherical_submission(Projection::Fisheye),
+        spherical_submission(Projection::Equirectangular180)
+    );
     SurfaceSize::new(3840, 1920, StereoFormat::Mono, EyeOrder::LeftRight)
         .expect("a decoded fisheye frame has dimensions the compositor can take");
     let err = SurfaceSize::new(1920, 1080, StereoFormat::Mvc, EyeOrder::LeftRight).unwrap_err();
